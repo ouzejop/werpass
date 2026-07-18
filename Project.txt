@@ -1,0 +1,352 @@
+Tu vas m’aider à développer WérPass, une application mobile créée pour l’OpenAI Build Week sur Devpost, dans la catégorie « Apps for Your Life ».
+
+Avant de modifier du code, lis entièrement ce contexte, inspecte le projet existant et propose une architecture adaptée au MVP. N’invente pas de fonctionnalité ou de décision de sécurité sans me prévenir.
+
+# 1. Présentation du projet
+
+WérPass est une application mobile permettant aux patients de conserver, organiser, consulter hors connexion et partager temporairement leurs documents médicaux.
+
+Le projet répond à un problème fréquent en Afrique : les dossiers médicaux sont fragmentés entre plusieurs établissements et différents supports physiques :
+
+- ordonnances ;
+- résultats d’analyses ;
+- carnets de vaccination ;
+- comptes rendus médicaux ;
+- certificats ;
+- radiographies et images ;
+- fichiers PDF, JPEG et PNG.
+
+Le patient doit rester propriétaire de ses données et contrôler chaque accès.
+
+# 2. Utilisateurs
+
+## Patient
+
+Le patient peut :
+
+- créer un compte avec son numéro de téléphone et un OTP et un code PIN ;
+- protéger localement l’application avec un code PIN ou la biométrie ;
+- importer ou photographier un document médical ;
+- consulter ses documents hors connexion ;
+- visualiser son historique sous forme de chronologie ;
+- choisir d’utiliser ou non l’import intelligent avec GPT-5.6 ;
+- vérifier les données avant leur envoi à OpenAI ;
+- sélectionner les documents à partager ;
+- générer un QR temporaire et un code d’accès médical ;
+- définir la durée d’un partage ;
+- révoquer un accès ;
+- consulter le journal des accès ;
+- synchroniser automatiquement les modifications lorsque la connexion revient.
+
+## Professionnel de santé
+
+Pour le MVP, les professionnels utilisent des comptes de démonstration. La vérification officielle de leur statut de médecin sera développée ultérieurement.
+
+Le professionnel peut :
+
+- se connecter à son espace ;
+- scanner un QR temporaire ou saisir un code médical ;
+- demander l’accès aux documents sélectionnés ;
+- obtenir l’accès uniquement après l’approbation du patient ;
+- en mode hors ligne le patient recoit un code a 6 chiffres qu'il pourra communiquer pour donner l'acces
+- consulter uniquement les documents autorisés ;
+- perdre automatiquement l’accès après expiration ou révocation.
+
+L’espace professionnel peut être une application web responsive afin que le médecin n’ait pas besoin d’installer l’application mobile.
+
+# 3. Utilisation de GPT-5.6
+
+GPT-5.6 intervient uniquement pendant l’import d’un document, lorsque le patient active l’option « Import intelligent ».
+
+Le flux doit être le suivant :
+
+1. Le patient importe une image ou un PDF.
+2. L’application effectue une première détection locale des données personnelles.
+3. Elle masque ou remplace notamment :
+   - le nom ;
+   - la date de naissance ;
+   - le numéro de téléphone ;
+   - l’adresse ;
+   - les identifiants de patient ;
+   - les numéros nationaux ;
+   - les QR codes et codes-barres ;
+   - les signatures ;
+   - les métadonnées sensibles.
+4. Le patient visualise les informations pseudonymisées.
+5. Il approuve ou annule l’envoi.
+6. Seul le texte minimal pseudonymisé est envoyé à GPT-5.6.
+7. Le document original n’est jamais envoyé à OpenAI.
+8. GPT retourne une réponse JSON structurée.
+9. Le patient vérifie et confirme le résultat avant son enregistrement.
+
+GPT peut servir à :
+
+- reconnaître la catégorie du document ;
+- extraire sa date ;
+- identifier le type d’établissement ;
+- extraire des champs structurés ;
+- proposer un titre ;
+- signaler des informations illisibles ou manquantes.
+
+GPT ne doit jamais :
+
+- poser un diagnostic ;
+- recommander un traitement ;
+- modifier une prescription ;
+- prendre une décision médicale ;
+- décider quels documents partager ;
+- analyser continuellement tout l’historique du patient.
+- pour des soucis de securites les donnees vont passer sur une passerelle pour eviter toute fuite d'information (peut etre pas dans cette mvp)
+
+Toute donnée de démonstration doit être synthétique.
+
+# 4. Protection des données
+
+Les documents sont chiffrés sur le téléphone avant leur stockage ou leur synchronisation.
+
+Principes obligatoires :
+
+- chiffrement local des fichiers et métadonnées ;
+- chiffrement authentifié, par exemple AES-256-GCM ;
+- clé différente pour chaque fichier ;
+- clé principale différente pour chaque patient ;
+- stockage des secrets locaux dans Android Keystore ou iOS Keychain via Expo SecureStore ;
+- aucune clé sensible dans AsyncStorage ;
+- aucune clé sensible dans le code source ;
+- transfert réseau uniquement par HTTPS ;
+- Supabase reçoit uniquement des fichiers et métadonnées chiffrés ;
+- utilisation des politiques Row Level Security ;
+- aucun document médical ni clé secrète dans les QR ;
+- aucune clé globale donnant accès à tous les patients.
+
+N’invente pas de mécanisme cryptographique personnalisé. Utilise des bibliothèques reconnues et signale-moi toute décision cryptographique importante avant de l’implémenter.
+
+# 5. Récupération après perte du téléphone
+
+Le patient doit pouvoir récupérer ses données sur un nouveau téléphone avec :
+
+- la vérification de son numéro par OTP ;
+- un PIN ou code de récupération personnel.
+
+Supabase ne doit jamais contenir la clé principale en clair.
+
+Il peut conserver une enveloppe chiffrée de la clé du patient. L’OTP et le PIN sont nécessaires pour autoriser sa récupération sur le nouvel appareil.
+
+Le processus attendu est :
+
+1. Connexion sur le nouveau téléphone.
+2. Vérification du numéro avec OTP.
+3. Saisie du PIN de récupération.
+4. Récupération de l’enveloppe chiffrée.
+5. Déchiffrement ou reconstitution de la clé uniquement sur le téléphone.
+6. Téléchargement et déchiffrement local des documents.
+
+Si cette conception présente une faiblesse ou nécessite un service sécurisé supplémentaire, explique-le avant de coder.
+
+# 6. Transfert entre deux appareils du patient
+
+Lorsqu’un patient possède encore son ancien téléphone :
+
+1. Le nouvel appareil génère une demande de transfert et un QR.
+2. L’ancien téléphone scanne le QR.
+3. Un OTP envoyé au numéro du patient confirme l’opération.
+4. L’ancien appareil chiffre la clé du patient pour le nouvel appareil.
+5. Le nouvel appareil récupère la clé sans qu’elle soit exposée en clair dans le QR ou dans Supabase.
+
+Le QR doit contenir seulement des informations temporaires comme :
+
+- un identifiant de session ;
+- une expiration ;
+- un nonce ;
+- la clé publique temporaire du nouvel appareil ;
+- une signature.
+(peut etre pas necessaire pour un mvp)
+
+# 7. Partage avec un professionnel
+
+Le patient sélectionne les documents avant de créer une session de partage.
+
+Le QR dynamique peut contenir :
+
+- l’identifiant temporaire de la session ;
+- une date d’expiration ;
+- un nonce ;
+- une signature.
+
+Il ne doit contenir :
+
+- aucun document médical ;
+- aucune clé médicale secrète ;
+- aucune donnée personnelle directement lisible.
+
+Le professionnel scanne le QR ou saisit un code médical à usage unique. Le patient reçoit la demande, voit l’identité déclarée du professionnel et confirme l’accès. La patient peut recevoir aussi un code otp expliquant le demande et le comminuquer au medecin pour confirmer l'acces.
+
+La session doit être :
+
+- temporaire ;
+- limitée aux documents choisis ;
+- journalisée ;
+- révocable ;
+- protégée contre les tentatives répétées.
+
+Pour le navigateur du professionnel, conçois un système utilisant une clé temporaire de session. Le navigateur peut générer une paire de clés éphémère et le téléphone du patient peut chiffrer les clés des documents sélectionnés pour cette session.
+
+Explique précisément cette architecture avant son implémentation.
+
+La révocation empêche les accès futurs. Elle ne peut pas effacer un document déjà photographié ou téléchargé par un professionnel.
+
+# 8. Fonctionnement hors connexion
+
+L’application du patient doit fonctionner hors connexion pour :
+
+- déverrouiller l’application avec le PIN ou la biométrie ;
+- consulter les documents disponibles localement ;
+- importer de nouveaux documents ;
+- modifier les métadonnées ;
+- préparer des opérations de synchronisation.
+
+Les opérations nécessitant internet sont placées dans une file d’attente :
+
+- synchronisation avec Supabase ;
+- utilisation de GPT-5.6 ;
+- récupération de compte ;
+- partage distant avec un professionnel.
+
+Chaque opération doit afficher un état :
+
+- enregistré localement ;
+- en attente ;
+- synchronisation en cours ;
+- synchronisé ;
+- échec à réessayer.
+
+Pour le MVP, le téléphone principal du patient est la source prioritaire. Cependant, utilise des numéros de version pour éviter qu’une ancienne modification écrase silencieusement une version plus récente.
+
+Les documents doivent être considérés comme immuables : une nouvelle version est ajoutée au lieu de remplacer définitivement le fichier original.
+
+# 9. Authentification et codes
+
+Il existe trois codes différents :
+
+1. OTP de connexion envoyé par SMS :
+   - sert à authentifier le compte ;
+   - ne doit jamais être communiqué à un médecin.
+
+2. PIN local ou biométrie :
+   - sert à déverrouiller l’application ;
+   - ne doit jamais être communiqué.
+
+3. Code d’accès médical :
+   - peut être communiqué au professionnel ;
+   - comporte six chiffres ;
+   - est à usage unique ;
+   - expire après quelques minutes ;
+   - est lié à une session et aux documents sélectionnés ;
+   - possède un nombre limité de tentatives.
+
+Ne mélange jamais ces trois mécanismes dans le code ou dans l’interface.
+
+# 10. Technologies envisagées
+
+## Application mobile
+
+- React Native ;
+- Expo ;
+- TypeScript ;
+- Expo Router ;
+- Expo Camera ;
+- Expo SecureStore ;
+- stockage local chiffré.
+
+## Backend
+
+- Supabase Auth ;
+- Supabase PostgreSQL ;
+- Supabase Storage ;
+- Row Level Security ;
+- fonctions serveur ou Edge Functions.
+
+## Intelligence artificielle
+
+- OpenAI Responses API ;
+- GPT-5.6 ;
+- Structured Outputs avec schéma JSON strict.
+
+## Portail professionnel
+
+- application web responsive ;
+- TypeScript ;
+- framework adapté au dépôt existant.
+
+## Tests
+
+- tests unitaires ;
+- tests des politiques RLS ;
+- tests du mode hors connexion ;
+- tests du chiffrement ;
+- tests des expirations et révocations ;
+- tests empêchant l’envoi de données non approuvées à OpenAI.
+
+# 11. MVP du hackathon
+
+Le MVP doit démontrer :
+
+1. Connexion d’un patient.
+2. Verrouillage local par PIN.
+3. Import d’une ordonnance ou d’un résultat d’analyse synthétique.
+4. Stockage local chiffré.
+5. Consultation hors connexion.
+6. Option d’import intelligent.
+7. Pseudonymisation et aperçu avant envoi.
+8. Appel à GPT-5.6 après consentement.
+9. Réponse JSON structurée et confirmation du patient.
+10. Synchronisation chiffrée avec Supabase.
+11. Chronologie médicale.
+12. Création d’un QR et d’un code médical temporaires.
+13. Demande d’accès par un professionnel de démonstration.
+14. Approbation du patient.
+15. Consultation limitée des documents.
+16. Expiration ou révocation.
+17. Journal des accès.
+
+# 12. Hors périmètre du MVP
+
+Ne développe pas maintenant :
+
+- la vérification officielle des médecins ;
+- les intégrations avec de vrais hôpitaux ;
+- le diagnostic médical ;
+- les recommandations thérapeutiques ;
+- une intégration FHIR complète ;
+- la blockchain ;
+- les commandes vocales ;
+- les langues locales ;
+- l’utilisation de vraies données médicales ;
+- la certification réglementaire de production.
+
+# 13. Méthode de travail attendue
+
+Commence par :
+
+1. Inspecter le dépôt sans modifier les fichiers.
+2. Résumer ce qui existe déjà.
+3. Identifier les dépendances et les risques.
+4. Proposer l’architecture des dossiers.
+5. Proposer le modèle de données Supabase.
+6. Décrire le modèle de chiffrement et de gestion des clés.
+7. Décrire les flux d’authentification, de récupération et de partage.
+8. Découper le MVP en étapes courtes et testables.
+9. Attendre mon approbation sur les choix de sécurité importants.
+10. Implémenter ensuite une étape à la fois avec des tests.
+
+Priorités absolues :
+
+1. Protection des données médicales.
+2. Contrôle et consentement du patient.
+3. Fonctionnement hors connexion.
+4. Simplicité de la démonstration.
+5. Utilisation pertinente et limitée de GPT-5.6.
+6. Aucun faux diagnostic ni conseil médical.
+7. Aucun secret exposé dans le code, les logs ou les QR.
+
+Commence maintenant par inspecter le projet et proposer le plan d’architecture du MVP. Ne code rien avant d’avoir présenté ce plan. Regarde comment organiser le fichiers .md, les workflows les skills...

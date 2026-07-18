@@ -1,0 +1,16 @@
+{
+  "name": "werpass",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "start": "corepack pnpm --dir apps/mobile start",
+    "android": "corepack pnpm --dir apps/mobile android",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test && node --experimental-strip-types supabase/functions/smart-import/core.test.mjs && node --experimental-strip-types supabase/functions/share-demo/core.test.mjs && node scripts/verify-fixtures.mjs",
+    "build": "pnpm --filter @werpass/clinician-web build",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "demo:reset": "pnpm --filter @werpass/mobile demo:reset"
+  },
+  "devDependencies": { "typescript": "^5.6.3" }
+}

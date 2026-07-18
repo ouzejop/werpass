@@ -1,0 +1,12 @@
+node_modules/
+.pnpm-store/
+dist/
+.demo-state/
+.expo/
+.codex-remote-attachments/
+apps/mobile/android/
+apps/mobile/ios/
+supabase/.temp/
+.env
+.env.*
+!.env.example

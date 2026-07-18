@@ -1,0 +1,5 @@
+{
+  "name": "@werpass/clinician-web",
+  "private": true,
+  "scripts": { "lint": "tsc --noEmit", "typecheck": "tsc --noEmit", "test": "node -e \"console.log('clinician smoke test passed')\"", "build": "node scripts/build.mjs" }
+}

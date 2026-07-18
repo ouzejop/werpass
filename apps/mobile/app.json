@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "WérPass",
+    "slug": "werpass",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.werpass.demo"
+    },
+    "ios": {
+      "bundleIdentifier": "com.werpass.demo",
+      "supportsTablet": true
+    }
+  }
+}

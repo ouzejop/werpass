@@ -1,0 +1,13 @@
+{
+  "prescription-demo": {
+    "kind": "prescription",
+    "syntheticMarker": "SYNTHETIC DEMO — NOT A REAL MEDICAL RECORD",
+    "patientId": "PATIENT DEMO 001"
+  },
+  "lab-result-demo": {
+    "kind": "lab-result",
+    "syntheticMarker": "SYNTHETIC DEMO — NOT A REAL MEDICAL RECORD",
+    "patientId": "PATIENT DEMO 002",
+    "warnings": ["illegible demo zone"]
+  }
+}

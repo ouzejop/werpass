@@ -1,0 +1,28 @@
+{
+  "name": "@werpass/mobile",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client --clear",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types test/demo.test.mjs",
+    "demo:reset": "node scripts/reset-demo.mjs"
+  },
+  "dependencies": {
+    "expo": "~57.0.7",
+    "expo-crypto": "~57.0.1",
+    "expo-dev-client": "~57.0.7",
+    "expo-document-picker": "~57.0.1",
+    "expo-file-system": "~57.0.1",
+    "expo-secure-store": "~57.0.1",
+    "expo-sqlite": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.17"
+  }
+}

@@ -1,0 +1,5 @@
+[functions.smart-import]
+verify_jwt = true
+
+[functions.share-demo]
+verify_jwt = false

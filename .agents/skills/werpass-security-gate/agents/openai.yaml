@@ -1,0 +1,4 @@
+interface:
+  display_name: "WérPass Security Gate"
+  short_description: "Sécuriser les changements sensibles WérPass"
+  default_prompt: "Utilise $werpass-security-gate pour vérifier ce changement WérPass avant implémentation."

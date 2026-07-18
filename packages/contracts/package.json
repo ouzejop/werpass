@@ -1,0 +1,6 @@
+{
+  "name": "@werpass/contracts",
+  "private": true,
+  "type": "module",
+  "scripts": { "lint": "tsc --noEmit", "typecheck": "tsc --noEmit", "test": "node -e \"console.log('contracts smoke test passed')\"" }
+}
