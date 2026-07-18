@@ -1,7 +1,12 @@
 import { constantTimeEqual, digestMedicalCode, generateMedicalCode, validCode, validOpaqueToken } from './core.ts';
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-  status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  status, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
 });
 const url = Deno.env.get('SUPABASE_URL')!;
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -29,6 +34,7 @@ async function rows(path: string, init?: RequestInit): Promise<Record<string, un
 
 Deno.serve(async (request) => {
   const requestId = crypto.randomUUID();
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
   if (request.method !== 'POST') return json({ error: 'method_not_allowed', requestId }, 405);
   if (!pepper) return json({ error: 'server_not_configured', requestId }, 503);
   try {

@@ -1,5 +1,18 @@
 # Dépannage reproductible
 
+## Build Android silencieux ou bloqué sous Windows
+
+Le chemin complet du monorepo peut dépasser les limites de certains outils natifs. Utiliser temporairement un lecteur court :
+
+```powershell
+subst W: C:\Users\user\Documents\Projects\WerPass
+Set-Location W:\apps\mobile\android
+$env:NODE_ENV='development'
+.\gradlew.bat assembleDebug --no-daemon
+```
+
+Puis supprimer le lecteur avec `subst W: /D`. Le 18 juillet, deux tentatives automatisées ont été arrêtées après absence prolongée de sortie et aucun APK n’a été produit ; `gradlew --status` a confirmé que les daemons avaient été arrêtés par l’utilisateur ou le système. Reprendre cette validation dans un terminal interactif ou Android Studio avant la répétition finale.
+
 ## Installation Expo bloquée sous PowerShell
 
 ### Symptômes observés

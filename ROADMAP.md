@@ -104,12 +104,14 @@ Acceptation :
 
 ## 19 juillet — Import intelligent consenti
 
-- [ ] Extraction locale bornée sur les deux fixtures.
-- [ ] Pseudonymisation déterministe et aperçu éditable.
-- [ ] Consentement explicite et annulable.
-- [ ] File d’attente si le réseau est absent.
-- [ ] Edge Function GPT-5.6 et Structured Output strict.
-- [ ] Vérification et confirmation du résultat.
+- [x] Extraction locale bornée sur les deux fixtures.
+- [x] Pseudonymisation déterministe et aperçu éditable.
+- [x] Consentement explicite et annulable.
+- [x] File d’attente si le réseau est absent.
+- [x] Edge Function GPT-5.6 et Structured Output strict (déployée ; appel réel bloqué par quota API).
+- [x] Vérification et confirmation du résultat (repli local explicitement simulé disponible).
+
+Limite au 18 juillet : l’intégration et les refus sont testés, mais l’acceptation GPT réelle reste non satisfaite tant que le fournisseur retourne `provider_rate_limited`.
 
 Acceptation :
 
@@ -122,13 +124,15 @@ Acceptation :
 
 ## 20 juillet — Synchronisation et partage
 
-- [ ] Supabase Auth et tables minimales avec RLS.
-- [ ] Upload du ciphertext et métadonnées chiffrées.
-- [ ] Portail professionnel de démonstration.
-- [ ] Session temporaire, QR opaque et code médical.
-- [ ] Demande, approbation patient et portée exacte.
-- [ ] Expiration, révocation et journal.
+- [x] Supabase Auth et tables minimales avec RLS (déployées ; OTP positif à valider).
+- [x] Upload du ciphertext et métadonnées chiffrées (implémenté ; parcours positif à valider).
+- [x] Portail professionnel de démonstration (build et refus navigateur vérifiés).
+- [x] Session temporaire, QR opaque et code médical.
+- [x] Demande, approbation patient et portée exacte (un document par session dans le prototype).
+- [x] Expiration, révocation et journal.
 - [ ] Intention de partage hors ligne en attente de reconnexion.
+
+Limite au 18 juillet : le partage positif, le rejeu et la révocation doivent encore être exercés avec une session OTP utilisateur réelle. Le portail expose uniquement le paquet chiffré et reste étiqueté prototype.
 
 Acceptation :
 
@@ -146,8 +150,8 @@ Acceptation :
 - [ ] Corriger uniquement les défauts P0 puis P1.
 - [ ] Répéter deux fois le parcours à froid.
 - [ ] Vérifier installation et reset à partir du README.
-- [ ] Scanner secrets, logs, QR et stockage.
-- [ ] Finaliser description Devpost et preuves d’usage de Codex.
+- [x] Scanner secrets, logs et contrats QR (`pnpm security:scan` ; inspection du stockage appareil encore manuelle).
+- [x] Finaliser le brouillon de description Devpost et les preuves d’usage de Codex dans `docs/SUBMISSION.md`.
 - [ ] Enregistrer une vidéo publique de moins de trois minutes avec voix.
 - [ ] Obtenir et renseigner l’identifiant \`/feedback\`.
 - [ ] Soumettre avant 20:00 UTC.

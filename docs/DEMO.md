@@ -4,19 +4,19 @@
 
 WérPass donne au patient un coffre médical utilisable malgré une connectivité intermittente. Le patient choisit exactement quand GPT-5.6 intervient et quels documents un professionnel peut consulter.
 
-## Script cible — 2 min 30
+## Script cible actuel — 2 min 30
 
 | Temps | Action | Preuve |
 |---|---|---|
 | 0:00–0:20 | Problème et écran d’accueil | Impact réel, données synthétiques |
 | 0:20–0:50 | Mode avion, PIN, import | Hors-ligne réel |
 | 0:50–1:05 | Relance et chronologie | Persistance chiffrée |
-| 1:05–1:35 | Reconnexion, aperçu pseudonymisé, consentement | Contrôle patient et GPT-5.6 |
-| 1:35–1:55 | Résultat structuré confirmé | IA limitée, pas de diagnostic |
-| 1:55–2:20 | QR/code, demande et approbation | Partage sélectif |
+| 1:05–1:35 | Aperçu pseudonymisé, consentement, simulation locale | Contrôle patient ; repli explicitement simulé |
+| 1:35–1:55 | Résultat structuré confirmé | Traitement borné, pas de diagnostic |
+| 1:55–2:20 | Reconnexion, sync ciphertext, QR/code | Partage sélectif en ligne |
 | 2:20–2:30 | Révocation et journal | Contrôle et audit |
 
-La voix doit expliquer explicitement comment Codex a accéléré architecture, implémentation, tests et revue, ainsi que l’usage réel de GPT-5.6.
+La voix doit expliquer explicitement comment Codex a accéléré architecture, implémentation, tests et revue. Ne pas annoncer un usage réel de GPT-5.6 tant que le quota API retourne `provider_rate_limited`. Montrer que le contrat GPT réel est prêt et déployé, puis annoncer clairement que la séquence filmée utilise le repli local simulé.
 
 ## Mode démo
 
@@ -42,12 +42,15 @@ La voix doit expliquer explicitement comment Codex a accéléré architecture, i
 - [ ] Lien de test et identifiants de démonstration si nécessaires.
 - [ ] Soumission finale confirmée avant 20:00 UTC le 21 juillet.
 
-## État au 17 juillet 2026
+## État au 18 juillet 2026
 
 - Page WérPass publiée sur Devpost.
 - Vidéo absente.
 - Soumission finale non confirmée.
-- Dépôt de code à créer et rendre testable.
+- Dépôt Git local créé et vérifiable avec `pnpm verify`.
+- Backend Supabase, fonction GPT et fonction de partage déployés.
+- GPT réel bloqué par quota API ; repli local simulé disponible et étiqueté.
+- Validation positive OTP/partage et parcours Android à réaliser avec l’utilisateur.
 
 ## Interdictions de présentation
 
