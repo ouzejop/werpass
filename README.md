@@ -48,9 +48,9 @@ Le partage distant sans réseau est illustré honnêtement comme une intention e
 
 Le socle applicatif se vérifie avec :
 
-\`\`\`text
+```text
 pnpm verify
-\`\`\`
+```
 
 Cette commande reproduit les vérifications de la CI : lint, types, tests ciblés, scan de sécurité et build du portail. Réinitialiser l’état de démonstration généré par les scripts avec `pnpm demo:reset` ; la base SQLite de l’appareil se réinitialise depuis l’interface avec confirmation explicite.
 
@@ -98,7 +98,7 @@ Définir `EXPO_PUBLIC_SUPABASE_URL` et `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` da
 
 Toute clé copiée dans une conversation, un ticket ou un log doit être révoquée avant utilisation.
 
-La procédure complète, incluant migrations, Auth Phone, les deux canaux SMS et les tests manuels, se trouve dans [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+La procédure complète, incluant migrations, Auth Phone, fonctions serveur et tests manuels, se trouve dans [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### Partage professionnel de démonstration
 
