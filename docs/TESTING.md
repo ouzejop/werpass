@@ -24,14 +24,36 @@ Tester les risques qui peuvent casser la démonstration ou invalider une garanti
 - le payload de sync ne contient ni original ni métadonnée sensible en clair ;
 - QR et code ne contiennent aucun secret ou contenu médical ;
 - les logs restent exempts de clé, token, texte pseudonymisé et contenu médical.
+- tout fichier non vide jusqu’à 5 Mo est importable ; un type inconnu devient `application/octet-stream` ;
+- seuls les deux fichiers synthétiques exacts sont éligibles à l’import intelligent.
+- un type libre proposé par l’IA est borné, modifiable puis stocké uniquement dans les métadonnées chiffrées ;
+- recherche, filtres et regroupement fonctionnent hors ligne sans table de catégories en clair ;
+- l’âge et les maladies chroniques restent dans le ciphertext du profil synchronisé.
 
-### OpenAI
+### Authentification et récupération locale
+
+- l’OTP d’inscription vérifie le téléphone mais ne déverrouille pas seul le coffre ;
+- le PIN local contient exactement quatre chiffres et se bloque temporairement après cinq erreurs ;
+- le code temporaire du médecin n’est jamais confondu avec l’OTP ou le PIN dans le domaine ou l’interface ;
+- une base SQLite illisible échoue fermé et affiche une récupération explicite ;
+- le coffre standard n’utilise aucun `PRAGMA key` ni option `useSQLCipher` ;
+- l’implémentation de la base reste derrière `VaultDatabase` ;
+- aucune suppression locale n’a lieu sans confirmation ; l’échec de fermeture d’un handle incompatible ne bloque pas la suppression confirmée ;
+- la restauration Android de l’application reste désactivée.
+
+### Groq / GPT‑OSS
 
 - zéro appel sans consentement explicite ;
+- le bouton « Analyse IA » affiche l’avertissement avant la préparation, puis exige une seconde confirmation sur le texte pseudonymisé éditable ;
+- l’interface indique sans ambiguïté que l’image enregistrée reste intacte et non anonymisée, tandis que ni l’image ni le fichier original ne sont envoyés à Groq ;
+- le bouton reste visible pour un document non compatible et explique la limite OCR locale sans proposer ni déclencher d’envoi ;
 - payload envoyé égal à l’aperçu approuvé ;
 - contrat impossible à instancier avec un fichier original ;
 - annulation et mode hors ligne n’envoient rien ;
 - réponse invalide, diagnostic ou traitement sont refusés.
+- aucune liste de types créée par le patient n’est ajoutée au payload Groq.
+- la réponse structurée conserve les sections, libellés et valeurs complètes, notamment unités et intervalles de référence, sans réduire l’analyse au seul type documentaire.
+- le résultat IA en attente est chiffré avant écriture SQLite et ne s’ouvre qu’avec la clé du document et le bon identifiant de requête.
 
 ### Hors ligne et sync
 
@@ -45,6 +67,14 @@ Tester les risques qui peuvent casser la démonstration ou invalider une garanti
 ### Partage et RLS
 
 - portée exacte de la sélection ;
+- une demande médecin passe à `requested` sans générer de code ;
+- l’identité déclarée du professionnel est visible au patient avant toute décision ;
+- aucun accès n’est possible avant `approve` authentifié du patient ;
+- `decline`, expiration et révocation bloquent l’accès ;
+- aucune génération de code avant `action: request` ;
+- hors mode démo, un échec SMS ne conserve aucun digest et ne passe pas la session à `approved` ;
+- en mode démo, le SMS est tout de même tenté et l’affichage du code exige la session authentifiée du patient ;
+- le mobile ne reçoit ni ne stocke le code temporaire ;
 - code usage unique, expiré et limité en tentatives ;
 - rejeu refusé ;
 - révocation/expiration bloque le prochain accès ;
@@ -64,6 +94,8 @@ Tester les risques qui peuvent casser la démonstration ou invalider une garanti
 5. build du portail.
 
 Le build natif EAS et les suites longues ne font pas partie de chaque itération.
+
+État au 18 juillet : `pnpm verify`, l’export Metro Android et `assembleDebug` passent. Les validations qui exigent un fournisseur réel — OTP téléphone, envoi Twilio, délivrabilité, RLS distant et parcours complet — restent manuelles et bloquantes avant la démo finale.
 
 ## Critères de blocage
 

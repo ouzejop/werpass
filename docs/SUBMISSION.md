@@ -11,15 +11,17 @@ Une connectivité intermittente ne devrait pas empêcher une personne d’accéd
 ## Ce que démontre le prototype
 
 - coffre réellement utilisable hors ligne avec PIN local ;
-- AES-256-GCM, clés de documents distinctes, AAD et stockage SQLCipher ;
-- import borné à deux fixtures strictement synthétiques ;
+- AES-256-GCM, clés de documents distinctes, AAD et stockage SQLite de ciphertext ;
+- import local de tout fichier non vide jusqu’à 5 Mo ; import intelligent borné aux deux fixtures strictement synthétiques ;
 - aperçu pseudonymisé éditable et consentement annulable ;
-- contrat GPT-5.6 strict côté Edge Function, `store: false`, original impossible dans le payload ;
-- repli déterministe affiché comme « Prototype simulé — aucun appel GPT » tant que le quota API est indisponible ;
+- contrat GPT‑OSS strict côté Edge Function, original impossible dans le payload ;
+- repli déterministe affiché comme « Prototype simulé — aucun appel GPT » si le service d’inférence est indisponible ;
 - synchronisation du ciphertext et métadonnées chiffrées ;
-- OTP patient distinct du PIN local et du code médical ;
-- partage de dix minutes, code à usage unique, cinq tentatives, révocation et audit serveur ;
-- portail professionnel limité au paquet chiffré autorisé.
+- inscription par numéro de téléphone et OTP patient distinct du PIN local à quatre chiffres ;
+- QR généré à la demande avec identifiant saisissable équivalent, sans donnée médicale ni clé ;
+- demande professionnelle liée à un navigateur précis, visible puis confirmée ou refusée par le patient ;
+- partage de cinq minutes, accès unique, révocation et audit serveur ;
+- portail professionnel limité au dossier et aux résultats d’analyse explicitement autorisés.
 
 ## Utilisation de Codex
 
@@ -30,15 +32,21 @@ Codex a servi à transformer le brief en tranche verticale, formaliser les invar
 - données synthétiques uniquement ;
 - prototype non médical et non certifié ;
 - partage distant hors ligne limité à une intention, sans délivrance d’accès ;
-- portail sans déchiffrement navigateur tant que l’échange de clés éphémères n’est pas validé ;
-- appel GPT réel actuellement bloqué par quota API et remplacé dans la démo par une simulation explicitement signalée.
+- prototype limité aux données synthétiques et à une démonstration contrôlée ;
+- appel d’inférence réel à valider après configuration du secret Supabase ; la simulation reste explicitement signalée lorsqu’elle est utilisée ;
+- configuration et délivrabilité de l’OTP d’inscription non encore validées ;
+- récupération d’une base locale incompatible limitée à une suppression locale explicite et irréversible.
 
 ## Actions utilisateur restantes
 
-- [ ] Fournir une adresse e-mail accessible et valider l’OTP patient.
+- [ ] Configurer Supabase Auth Phone et son fournisseur SMS.
+- [ ] Fournir un numéro de téléphone de test vérifié et valider l’OTP patient.
+- [ ] Confirmer la migration MIME distante et redéployer les Edge Functions finales.
+- [ ] Confirmer la réinitialisation locale proposée sur l’APK actuel.
 - [ ] Exécuter le parcours Android en mode avion, fermer et relancer l’application.
 - [ ] Réactiver le réseau et synchroniser le ciphertext.
 - [ ] Créer un partage, tester un accès, un rejeu refusé et une révocation.
+- [ ] Compléter/vérifier les événements d’audit `code_failed` et `expired` si montrés dans la démo.
 - [ ] Répéter deux fois le parcours à froid.
 - [ ] Enregistrer et publier une vidéo avec voix de moins de trois minutes.
 - [ ] Renseigner l’identifiant `/feedback` et les liens définitifs.

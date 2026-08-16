@@ -4,9 +4,14 @@ dist/
 .demo-state/
 .expo/
 .codex-remote-attachments/
+.dev-servers/
 apps/mobile/android/
 apps/mobile/ios/
 supabase/.temp/
 .env
 .env.*
 !.env.example
+App-old.tsx
+test-otp.mjs
+apps/clinician-web/package-lock.json
+.devpost-hackathon-state.json

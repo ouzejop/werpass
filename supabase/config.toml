@@ -3,3 +3,8 @@ verify_jwt = true
 
 [functions.share-demo]
 verify_jwt = false
+
+# Démo locale uniquement : ce numéro synthétique accepte l'OTP fixe 123456.
+# Ne jamais utiliser ce réglage pour un projet réel.
+[auth.sms.test_otp]
+"221771234567" = "123456"

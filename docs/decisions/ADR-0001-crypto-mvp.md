@@ -1,59 +1,79 @@
-# ADR-0001 — Chiffrement et gestion des clés du MVP
+# ADR-0001 — Chiffrement applicatif et abstraction du coffre
 
-- Statut : **approuvé**
-- Date : 2026-07-17
+- Statut : **approuvé — Hackathon MVP**
+- Date : 2026-08-01
+- Remplace : la décision SQLCipher du 2026-07-17 pour la version de démonstration
 
 ## Contexte
 
-Le MVP doit stocker et synchroniser des documents synthétiques comme s’il s’agissait de données sensibles, sans inventer de cryptographie ni construire la récupération multi-appareil.
+La V1 doit être stable et facile à lancer avec Expo Dev Client pendant le hackathon. SQLCipher impose une compilation native spécifique et ajoute une source de blocage qui n’est pas nécessaire pour démontrer le chiffrement des documents.
 
-## Décision proposée
+Le besoin de sécurité reste inchangé : les documents médicaux synthétiques et leurs métadonnées sensibles doivent être chiffrés avant toute persistance SQLite ou synchronisation Supabase.
 
-1. Générer une clé principale patient aléatoire de 32 octets.
-2. Générer une clé aléatoire distincte de 32 octets pour chaque version de document.
-3. Chiffrer fichier et métadonnées sensibles avec AES-256-GCM.
-4. Utiliser un nonce aléatoire unique de 12 octets et un tag de 16 octets pour chaque opération.
-5. Authentifier comme AAD : version du format, identifiant patient, document et version.
-6. Envelopper chaque clé de document sous la clé patient avec un nonce distinct.
-7. Conserver la clé patient uniquement sous forme protégée par un secret appareil stocké dans SecureStore/Keystore/Keychain.
-8. Utiliser SQLCipher pour la base locale et le système de fichiers privé pour les blobs déjà chiffrés.
-9. Versionner le format d’enveloppe dès la première version.
-10. Utiliser le PIN comme verrou local avec compteur et délai, jamais seul pour dériver ou protéger la clé principale.
+## Décision
 
-## Non-décisions
+1. Générer une clé patient aléatoire de 32 octets.
+2. Générer une clé aléatoire distincte pour chaque version de document.
+3. Chiffrer les fichiers et métadonnées sensibles avec AES-256-GCM.
+4. Utiliser un nonce aléatoire unique de 12 octets et un tag de 16 octets.
+5. Authentifier comme AAD la version du format, le patient, le document et la version.
+6. Envelopper chaque clé de document avec la clé patient.
+7. Protéger la clé patient avec un secret appareil stocké dans SecureStore/Keystore/Keychain.
+8. Utiliser **SQLite standard** pour la base locale du Hackathon MVP.
+9. Conserver uniquement le ciphertext, les enveloppes de clés et les métadonnées chiffrées pour les données médicales sensibles dans SQLite.
+10. Accéder à SQLite uniquement via l’interface `VaultDatabase` et son implémentation `SQLiteVaultDatabase`.
+11. Versionner le format d’enveloppe dès la première version.
+12. Utiliser le PIN comme verrou local avec compteur et délai, jamais comme clé cryptographique.
+13. Pour un partage approuvé, générer une paire Curve25519 éphémère dans le navigateur professionnel et chiffrer uniquement la clé AES du document avec `nacl.box`. La clé patient, la clé de document en clair et la clé privée du navigateur ne quittent jamais leur appareil.
 
-- Aucune récupération après perte du téléphone.
-- Aucun transfert entre appareils.
-- Aucune clé globale côté serveur.
-- Aucune primitive cryptographique personnalisée.
-- Aucun partage distant hors ligne réel.
+## Frontière de l’abstraction
 
-## Format logique
+Le domaine et les écrans ne dépendent pas d’Expo SQLite ni de SQLCipher.
 
-\`\`\`text
-envelopeVersion
-algorithm
-keyId
-nonce
-ciphertext
-tag
-aadVersion
-\`\`\`
+```text
+VaultDatabase
+    └── SQLiteVaultDatabase       (Hackathon MVP, SQLite standard)
 
-Les identifiants présents dans l’AAD ne sont pas secrets. Toute combinaison clé/nonce est unique.
+Future:
+    └── SQLCipherVaultDatabase    (après le hackathon)
+```
+
+`TODO(HACKATHON): remplacer SQLiteVaultDatabase par SQLCipherVaultDatabase lorsque la protection de la base locale devient une exigence produit. Cette migration ne doit modifier ni les modèles, ni les repositories, ni les services, ni les écrans.
+
+## Ce qui est temporairement abandonné
+
+- SQLCipher dans la compilation native ;
+- `useSQLCipher` dans la configuration Expo ;
+- toute utilisation de `PRAGMA key` ;
+- la garantie de confidentialité des champs techniques de la base SQLite elle-même.
+
+Cette dernière limite est acceptée uniquement pour la démonstration avec des données synthétiques. Elle ne doit pas être présentée comme une garantie de production.
+
+## Invariants conservés
+
+- aucun document original n’est envoyé à Groq ni à aucun fournisseur IA ;
+- aucune clé principale n’est envoyée en clair à Supabase ;
+- les données médicales sont chiffrées avant SQLite et avant synchronisation ;
+- les types documentaires libres, l’âge, le groupe sanguin et les maladies chroniques utilisent les enveloppes de métadonnées/profil existantes et ne créent aucun index sensible en clair ;
+- les clés et secrets restent hors d’AsyncStorage et des variables publiques ;
+- les QR, codes, logs et erreurs ne contiennent ni document ni clé ;
+- Supabase ne reçoit, pour le partage, que la clé publique éphémère et une clé de document emballée ;
+- le changement de stockage ne modifie pas le partage, le consentement patient ou la synchronisation chiffrée.
 
 ## Conséquences
 
-- Supabase stocke ciphertext, métadonnées chiffrées et clés enveloppées.
-- Une perte du secret appareil rend les données locales irrécupérables dans le MVP.
-- SQLCipher impose un development build Expo ; Expo Go ne suffit pas.
-- Les fichiers du MVP doivent rester petits si l’API de chiffrement ne fournit pas de flux natif.
-- Un spike limité validera la compatibilité Expo avant construction du coffre.
+- Expo Dev Client peut utiliser le coffre sans compilation SQLCipher personnalisée ;
+- la base SQLite locale n’est plus un second chiffrement : la protection repose sur le chiffrement applicatif et le secret appareil ;
+- une ancienne base SQLCipher peut être illisible par SQLite standard ; la récupération reste un reset local explicite et irréversible ;
+- les blobs restent chiffrés dans le système de fichiers privé ;
+- les tests doivent vérifier le ciphertext, le round-trip AES-GCM et l’absence de `PRAGMA key`.
 
-## Repli
+## Réactivation après le hackathon
 
-Si l’API Expo retenue échoue au spike, choisir une bibliothèque native reconnue après revue. Ne jamais remplacer AES-GCM par un chiffrement maison ou désactiver le chiffrement pour respecter la deadline.
+1. Implémenter `SQLCipherVaultDatabase` derrière `VaultDatabase`.
+2. Ajouter le plugin/configuration native SQLCipher dans l’application Expo.
+3. Restaurer la politique de migration ou de reset des anciennes bases.
+4. Tester une base vide, une base existante, une clé incorrecte et une restauration d’appareil.
+5. Mettre à jour ce document et obtenir une nouvelle approbation avant déploiement réel.
 
-## Validation attendue
-
-Répondre explicitement « ADR-0001 approuvé » avant l’implémentation du coffre.
+Ne jamais remplacer AES-256-GCM par un chiffrement maison et ne jamais stocker une clé globale côté serveur.

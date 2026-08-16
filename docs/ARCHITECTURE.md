@@ -8,12 +8,12 @@ WérPass suit une architecture local-first : le téléphone patient est la sourc
 
 \`\`\`text
 apps/mobile
-  Application patient Expo : PIN, coffre, import, chronologie, consentement,
-  synchronisation, partage et journal.
+  Application patient Expo : inscription téléphone/OTP, PIN à quatre chiffres,
+  coffre, accueil QR, import, documents, consentement et synchronisation.
 
 apps/clinician-web
-  Portail React/Vite : compte de démonstration, saisie de code/scan QR,
-  demande et consultation temporaire.
+  Portail statique de démonstration : identité déclarée, demande, attente de la
+  confirmation patient, saisie du code et affichage du paquet chiffré autorisé.
 
 packages/contracts
   Seul package partagé initial : schémas Zod, enums et types réseau.
@@ -29,18 +29,23 @@ Ne pas créer de package \`crypto\`, \`domain\`, \`sync\` ou \`ui\` avant qu’a
 
 ## Flux principal
 
-1. Importer un fichier dans une zone temporaire.
-2. Générer une clé de fichier, chiffrer, vérifier le ciphertext puis supprimer la copie temporaire.
-3. Enregistrer la version immuable et une opération d’outbox dans la base locale chiffrée.
-4. Afficher immédiatement le document dans la chronologie locale.
-5. Au retour du réseau, envoyer uniquement ciphertext, enveloppe de clé et métadonnées chiffrées.
-6. Pour l’import intelligent, extraire et pseudonymiser localement, afficher le payload puis attendre le consentement.
-7. Envoyer le texte approuvé à une Edge Function ; elle seule possède la clé OpenAI.
-8. Pour le partage, créer une session limitée, obtenir l’approbation du patient et délivrer seulement les versions sélectionnées.
+1. Vérifier le numéro patient par OTP Supabase, puis créer le PIN local de quatre chiffres.
+2. Importer un fichier non vide de 5 Mo maximum dans une zone temporaire.
+3. Générer une clé de fichier, chiffrer, vérifier le ciphertext puis supprimer la copie temporaire.
+4. Enregistrer la version immuable et une opération d’outbox dans la base locale chiffrée.
+5. Afficher immédiatement le document dans la page Documents et le QR/intention sur l’accueil.
+6. Au retour du réseau, envoyer uniquement ciphertext, enveloppe de clé et métadonnées chiffrées.
+7. Classer localement les documents avec un type libre, chiffré avec les autres métadonnées ; rechercher, filtrer et regrouper uniquement après déchiffrement en mémoire.
+8. Pour l’import intelligent des deux fixtures, extraire et pseudonymiser localement, afficher le payload puis attendre le consentement.
+9. Envoyer le texte approuvé à une Edge Function ; elle seule possède la clé Groq et retourne un type libre, un résumé factuel, l’établissement et toutes les informations explicites structurées par section. Le patient peut modifier le type puis confirmer ou infirmer l’analyse complète.
+9. Pour le partage, activer une session de dix minutes pour un document synchronisé.
+10. Le médecin déclare son identité ; la session passe à `requested` sans accès.
+11. Le patient confirme ou refuse ; seulement après confirmation, le serveur génère le code et envoie le SMS.
+12. Le portail consomme le code une fois et reçoit uniquement l’enveloppe sélectionnée.
 
 ## Stockage local
 
-- SQLCipher pour métadonnées, outbox, journal et enveloppes.
+- SQLite standard derrière `VaultDatabase` pour métadonnées techniques, outbox, journal et enveloppes déjà chiffrées.
 - Système de fichiers privé pour les blobs chiffrés.
 - SecureStore/Keystore/Keychain pour le secret lié à l’appareil.
 - Aucun secret dans AsyncStorage.
@@ -51,13 +56,11 @@ Ne pas créer de package \`crypto\`, \`domain\`, \`sync\` ou \`ui\` avant qu’a
 | Table | Rôle |
 |---|---|
 | \`profiles\` | Profil minimal relié à \`auth.users\` |
-| \`devices\` | Appareils autorisés et clé publique, si nécessaire au partage |
 | \`documents\` | Identité logique appartenant à un patient |
-| \`document_versions\` | Version immuable, chemin Storage, hash et enveloppe de clé |
+| \`document_versions\` | Version immuable, ciphertext, hash et enveloppe de clé |
 | \`share_sessions\` | Portée, état, création et expiration |
 | \`share_items\` | Versions autorisées dans une session |
-| \`share_requests\` | Demande du professionnel et décision patient |
-| \`medical_access_codes\` | Hash serveur, expiration, tentatives, consommation |
+| \`medical_access_codes\` | HMAC serveur, expiration, tentatives, consommation |
 | \`access_events\` | Journal append-only créé côté serveur |
 | \`sync_mutations\` | Idempotence et version attendue |
 
@@ -68,7 +71,7 @@ Ne pas créer de package \`crypto\`, \`domain\`, \`sync\` ou \`ui\` avant qu’a
 - Le professionnel ne lit jamais directement les tables patient.
 - Les transitions de partage passent par des fonctions serveur validant portée, état et expiration.
 - Le rôle client ne peut ni inventer ni modifier un événement d’audit.
-- Le bucket Storage est privé ; ses objets sont également chiffrés par le client.
+- La verticale actuelle persiste le ciphertext dans `document_versions` ; aucun original ni clé claire n’est stocké côté serveur. `SQLCipherVaultDatabase` reste une évolution future derrière la même abstraction.
 
 ## Synchronisation
 
@@ -84,7 +87,7 @@ L’outbox locale contient un identifiant d’idempotence, le type d’opératio
 ## Choix d’efficacité
 
 - React/Vite pour le portail statique ; logique privilégiée dans Supabase.
-- Deux fixtures et un seul scénario nominal.
+- Deux fixtures pour GPT‑OSS et un seul scénario nominal ; l’import local général reste disponible.
 - Pas de temps réel, push ou worker tant qu’un polling court suffit à la démo.
 - Pas d’ORM partagé avant que les requêtes réelles soient connues.
 - Pas d’E2E mobile lourd avant stabilité du parcours ; les invariants critiques sont testés plus bas dans la pyramide.

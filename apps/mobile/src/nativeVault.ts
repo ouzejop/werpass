@@ -11,25 +11,61 @@ import {
   randomUUID,
 } from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
+import { EncodingType, readAsStringAsync } from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
-import { deleteDatabaseAsync, openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
-import { extractAndPseudonymizeFixture, parseSmartImportRequest, parseSmartImportResponse, simulateSmartImportLocally, type SmartImportRequest, type SmartImportResponse } from '../../../packages/contracts/src/smart-import';
+import { deleteDatabaseAsync } from 'expo-sqlite';
+import nacl from 'tweetnacl';
+import { extractAndPseudonymizeFixture, normalizeDocumentType, parseSmartImportRequest, parseSmartImportResponse, simulateSmartImportLocally, type SmartImportRequest, type SmartImportResponse } from '../../../packages/contracts/src/smart-import';
+import { createPendingShareIntent, type ShareIntent } from './shareIntent';
+import { classifyImport } from './importPolicy';
+import { decodeBase64 } from './binaryEncoding';
+import { isUnreadableVaultDatabaseError, VaultRecoveryRequiredError } from './vaultRecovery';
+import { SQLiteVaultDatabase, type VaultDatabase } from './vaultDatabase';
+
+export { VaultRecoveryRequiredError } from './vaultRecovery';
 
 const PATIENT_ID = 'patient-demo';
 const DB_NAME = 'werpass-vault.db';
-const DB_KEY = 'werpass.db-key.v1';
 const DEVICE_KEY = 'werpass.device-key.v1';
 const PIN_KEY = 'werpass.local-pin.v1';
 const PIN_STATE_KEY = 'werpass.pin-state.v1';
 const SUPABASE_SESSION_KEY = 'werpass.supabase-session.v1';
+const ENCRYPTED_PROFILE_KEY = 'werpass.encrypted-profile.v1';
 const MAX_ATTEMPTS = 5;
 const LOCK_MS = 30_000;
 const vaultDirectory = new Directory(Paths.document, 'vault');
 const secureStoreOptions: SecureStore.SecureStoreOptions = { keychainService: 'werpass-vault' };
 
+async function readPickedFileBytes(uri: string, source: File): Promise<Uint8Array> {
+  try {
+    // Keep Android's temporary SAF permission by reading the original URI
+    // first. This avoids Expo Go's inaccessible host.exp.exponent cache copy
+    // for some providers (WhatsApp, Drive, and Downloads).
+    const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
+    return decodeBase64(base64);
+  } catch {
+    // Fallback for providers that return a regular file:// URI.
+    return await source.bytes();
+  }
+}
+
 type SyncState = 'queued' | 'syncing' | 'synced' | 'failed';
-type DocumentKind = 'prescription' | 'lab-result';
-type Metadata = { title: string; kind: DocumentKind };
+type DocumentKind = 'prescription' | 'lab-result' | 'document';
+export type StoredAiAnalysis = {
+  status: 'confirmed' | 'rejected';
+  reviewedAt: string;
+  source: 'groq' | 'openai_legacy' | 'local_demo_simulation';
+  model?: string;
+  result: SmartImportResponse;
+};
+type Metadata = {
+  title: string;
+  kind: DocumentKind;
+  documentType?: string;
+  smartImportEligible?: boolean;
+  aiAnalysis?: StoredAiAnalysis;
+};
+export type PatientProfile = { displayName: string; age: string; bloodType: string; conditions: string };
 type DocumentRow = {
   id: string;
   patient_id: string;
@@ -53,17 +89,22 @@ export type TimelineDocument = {
   createdAt: string;
   syncState: SyncState;
   outboxState: 'queued' | 'failed' | 'complete';
+  documentType: string;
+  smartImportEligible: boolean;
+  aiAnalysis?: StoredAiAnalysis;
 };
 
-let database: SQLiteDatabase | null = null;
+let database: VaultDatabase | null = null;
 
 const utf8 = (value: string) => new TextEncoder().encode(value);
 const bytesToHex = (value: Uint8Array) => Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('');
 const arrayBufferToHex = (value: ArrayBuffer) => bytesToHex(new Uint8Array(value));
 const fileAad = (documentId: string, version: number) => utf8(`werpass:file:v1:${PATIENT_ID}:${documentId}:${version}`);
 const metadataAad = (documentId: string, version: number) => utf8(`werpass:metadata:v1:${PATIENT_ID}:${documentId}:${version}`);
+const smartImportResultAad = (documentId: string, requestId: string) => utf8(`werpass:smart-import-result:v1:${PATIENT_ID}:${documentId}:${requestId}`);
 const keyAad = (documentId: string, version: number) => utf8(`werpass:file-key:v1:${PATIENT_ID}:${documentId}:${version}`);
 const patientKeyAad = () => utf8(`werpass:patient-key:v1:${PATIENT_ID}`);
+const profileAad = () => utf8(`werpass:profile:v1:${PATIENT_ID}`);
 
 const importAesKey = async (encoded: string) =>
   AESEncryptionKey.import(encoded, 'base64') as unknown as Promise<AESEncryptionKey>;
@@ -79,13 +120,12 @@ async function secureValue(key: string, bytes = 32): Promise<string> {
   return value;
 }
 
-async function db(): Promise<SQLiteDatabase> {
+async function db(): Promise<VaultDatabase> {
   if (database) return database;
-  const key = await secureValue(DB_KEY);
-  if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('Invalid local database key');
-  const opened = await openDatabaseAsync(DB_NAME);
-  await opened.execAsync(`PRAGMA key = "x'${key}'"; PRAGMA foreign_keys = ON;`);
-  await opened.execAsync(`
+  const opened = new SQLiteVaultDatabase(DB_NAME);
+  try {
+    await opened.open();
+    await opened.execute(`
     CREATE TABLE IF NOT EXISTS config (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
@@ -130,9 +170,22 @@ async function db(): Promise<SQLiteDatabase> {
       created_at TEXT NOT NULL,
       UNIQUE(document_id)
     );
-  `);
-  database = opened;
-  return opened;
+    CREATE TABLE IF NOT EXISTS share_request_outbox (
+      id TEXT PRIMARY KEY NOT NULL,
+      document_id TEXT NOT NULL REFERENCES documents(id),
+      state TEXT NOT NULL CHECK(state IN ('pending_connection','activating','failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      UNIQUE(document_id)
+    );
+    `);
+    database = opened;
+    return opened;
+  } catch (error) {
+    await opened.close().catch(() => undefined);
+    if (isUnreadableVaultDatabaseError(error)) throw new VaultRecoveryRequiredError();
+    throw error;
+  }
 }
 
 async function patientKey(): Promise<AESEncryptionKey> {
@@ -141,7 +194,7 @@ async function patientKey(): Promise<AESEncryptionKey> {
   const deviceKeyHex = await secureValue(DEVICE_KEY);
   const deviceKey = await AESEncryptionKey.import(deviceKeyHex, 'hex') as unknown as AESEncryptionKey;
   if (row) {
-    const sealed = AESSealedData.fromCombined(row.value, { ivLength: 12, tagLength: 16 });
+    const sealed = AESSealedData.fromCombined(decodeBase64(row.value), { ivLength: 12, tagLength: 16 });
     const clear = await aesDecryptAsync(sealed, deviceKey, { additionalData: patientKeyAad() });
     return AESEncryptionKey.import(clear) as unknown as Promise<AESEncryptionKey>;
   }
@@ -163,7 +216,7 @@ export async function initializeVault(): Promise<void> {
 export const hasLocalPin = async () => (await SecureStore.getItemAsync(PIN_KEY, secureStoreOptions)) !== null;
 
 export async function createLocalPin(pin: string): Promise<void> {
-  if (!/^\d{4,8}$/.test(pin)) throw new Error('Le PIN doit contenir 4 à 8 chiffres.');
+  if (!/^\d{4}$/.test(pin)) throw new Error('Le PIN local doit contenir exactement 4 chiffres.');
   if (await hasLocalPin()) throw new Error('Un PIN local existe déjà.');
   await SecureStore.setItemAsync(PIN_KEY, pin, secureStoreOptions);
   await SecureStore.setItemAsync(PIN_STATE_KEY, JSON.stringify({ attempts: 0, lockedUntil: 0 } satisfies PinState), secureStoreOptions);
@@ -183,7 +236,7 @@ export async function verifyLocalPin(pin: string): Promise<void> {
   const state: PinState = rawState ? JSON.parse(rawState) as PinState : { attempts: 0, lockedUntil: 0 };
   const now = Date.now();
   if (state.lockedUntil > now) throw new Error(`Trop de tentatives. Réessayez dans ${Math.ceil((state.lockedUntil - now) / 1000)} s.`);
-  if (!/^\d{4,8}$/.test(pin) || !equalPin(pin, expected)) {
+  if (!/^\d{4}$/.test(pin) || !equalPin(pin, expected)) {
     const attempts = state.attempts + 1;
     const next = attempts >= MAX_ATTEMPTS ? { attempts: 0, lockedUntil: now + LOCK_MS } : { attempts, lockedUntil: 0 };
     await SecureStore.setItemAsync(PIN_STATE_KEY, JSON.stringify(next), secureStoreOptions);
@@ -192,29 +245,20 @@ export async function verifyLocalPin(pin: string): Promise<void> {
   await SecureStore.setItemAsync(PIN_STATE_KEY, JSON.stringify({ attempts: 0, lockedUntil: 0 } satisfies PinState), secureStoreOptions);
 }
 
-const allowedFixture = (name: string) => {
-  if (name === 'prescription-demo.pdf') return { kind: 'prescription' as const, mimeType: 'application/pdf', title: 'Ordonnance synthétique' };
-  if (name === 'lab-result-demo.jpg') return { kind: 'lab-result' as const, mimeType: 'image/jpeg', title: 'Résultat d’analyse synthétique' };
-  return null;
-};
-
 export async function importSyntheticDocument(): Promise<string | null> {
   const selection = await DocumentPicker.getDocumentAsync({
-    type: ['application/pdf', 'image/jpeg'],
-    copyToCacheDirectory: true,
+    type: '*/*',
+    copyToCacheDirectory: false,
     multiple: false,
   });
   if (selection.canceled) return null;
   const asset = selection.assets[0];
   const source = new File(asset.uri);
-  try {
-    const fixture = allowedFixture(asset.name);
-    if (!fixture) throw new Error('Import refusé : choisissez uniquement une des deux fixtures synthétiques.');
+
     if (asset.size && asset.size > 5_000_000) throw new Error('Import refusé : fichier trop volumineux.');
-    const plaintext = await source.bytes();
+    const plaintext = await readPickedFileBytes(asset.uri, source);
     if (plaintext.length === 0 || plaintext.length > 5_000_000) throw new Error('Import refusé : taille invalide.');
-    source.delete();
-    if (source.exists) throw new Error('Suppression de la copie temporaire impossible.');
+    const fixture = classifyImport(asset.name, plaintext);
     const id = randomUUID();
     const version = 1;
     const fileKey = await generateAesKey();
@@ -232,7 +276,7 @@ export async function importSyntheticDocument(): Promise<string | null> {
     const wrappedKey = await aesEncryptAsync(await fileKey.bytes(), masterKey, {
       nonce: { length: 12 }, tagLength: 16, additionalData: keyAad(id, version),
     });
-    const metadata = utf8(JSON.stringify({ title: fixture.title, kind: fixture.kind } satisfies Metadata));
+    const metadata = utf8(JSON.stringify({ title: fixture.title, kind: fixture.kind, documentType: '', smartImportEligible: fixture.kind !== 'document' } satisfies Metadata));
     const encryptedMetadata = await aesEncryptAsync(metadata, fileKey, {
       nonce: { length: 12 }, tagLength: 16, additionalData: metadataAad(id, version),
     });
@@ -245,14 +289,14 @@ export async function importSyntheticDocument(): Promise<string | null> {
     const createdAt = new Date().toISOString();
     const localDb = await db();
     try {
-      await localDb.withExclusiveTransactionAsync(async (transaction) => {
-        await transaction.runAsync(
+      await localDb.transaction(async () => {
+        await localDb.runAsync(
           `INSERT INTO documents(id, patient_id, version, mime_type, size_bytes, blob_name, ciphertext_hash,
             wrapped_file_key, encrypted_metadata, created_at, sync_state) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
           id, PATIENT_ID, version, fixture.mimeType, plaintext.length, blobName, ciphertextHash,
           await wrappedKey.combined('base64'), await encryptedMetadata.combined('base64'), createdAt, 'queued',
         );
-        await transaction.runAsync(
+        await localDb.runAsync(
           `INSERT INTO outbox(id, document_id, expected_version, operation, attempts, state)
            VALUES(?,?,?,?,0,'queued')`,
           `upload:${id}:${version}`, id, version, 'upload_ciphertext',
@@ -262,25 +306,18 @@ export async function importSyntheticDocument(): Promise<string | null> {
       destination.delete();
       throw error;
     }
-    return id;
-  } finally {
-    try {
-      if (source.exists) source.delete();
-    } catch {
-      // Cache-scoped picker copies are also cleaned by the OS; never expose a path in an error.
-    }
-  }
+  return id;
 }
 
 async function unwrapFileKey(row: DocumentRow): Promise<AESEncryptionKey> {
   const masterKey = await patientKey();
-  const wrapped = AESSealedData.fromCombined(row.wrapped_file_key, { ivLength: 12, tagLength: 16 });
+  const wrapped = AESSealedData.fromCombined(decodeBase64(row.wrapped_file_key), { ivLength: 12, tagLength: 16 });
   const clear = await aesDecryptAsync(wrapped, masterKey, { additionalData: keyAad(row.id, row.version) });
   return AESEncryptionKey.import(clear) as unknown as Promise<AESEncryptionKey>;
 }
 
 async function decryptMetadata(row: DocumentRow, key: AESEncryptionKey): Promise<Metadata> {
-  const sealed = AESSealedData.fromCombined(row.encrypted_metadata, { ivLength: 12, tagLength: 16 });
+  const sealed = AESSealedData.fromCombined(decodeBase64(row.encrypted_metadata), { ivLength: 12, tagLength: 16 });
   const clear = await aesDecryptAsync(sealed, key, { additionalData: metadataAad(row.id, row.version) });
   return JSON.parse(new TextDecoder().decode(clear)) as Metadata;
 }
@@ -295,7 +332,17 @@ export async function listTimeline(): Promise<TimelineDocument[]> {
   return Promise.all(rows.map(async (row) => {
     const key = await unwrapFileKey(row);
     const metadata = await decryptMetadata(row, key);
-    return { id: row.id, title: metadata.title, kind: metadata.kind, createdAt: row.created_at, syncState: row.sync_state, outboxState: row.outbox_state ?? 'complete' };
+    return {
+      id: row.id,
+      title: metadata.title,
+      kind: metadata.kind,
+      documentType: typeof metadata.documentType === 'string' ? metadata.documentType : '',
+      createdAt: row.created_at,
+      syncState: row.sync_state,
+      outboxState: row.outbox_state ?? 'complete',
+      smartImportEligible: metadata.smartImportEligible === true,
+      aiAnalysis: metadata.aiAnalysis,
+    };
   }));
 }
 
@@ -307,7 +354,7 @@ const toBase64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 
-type DemoSession = { accessToken: string; userId: string };
+type DemoSession = { accessToken: string; refreshToken: string; userId: string; expiresAt: number };
 
 const supabaseConfig = () => {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
@@ -318,35 +365,89 @@ const supabaseConfig = () => {
 
 async function demoSession(): Promise<DemoSession> {
   const existing = await SecureStore.getItemAsync(SUPABASE_SESSION_KEY, secureStoreOptions);
-  if (existing) return JSON.parse(existing) as DemoSession;
-  throw new Error('Connexion OTP patient requise avant la synchronisation.');
+  if (!existing) throw new Error('Connexion OTP patient requise avant la synchronisation.');
+  const session = JSON.parse(existing) as Partial<DemoSession>;
+  if (typeof session.accessToken !== 'string' || typeof session.refreshToken !== 'string' || typeof session.userId !== 'string') {
+    await SecureStore.deleteItemAsync(SUPABASE_SESSION_KEY, secureStoreOptions);
+    throw new Error('Connexion OTP patient requise avant la synchronisation.');
+  }
+  if (typeof session.expiresAt === 'number' && session.expiresAt > Date.now() + 60_000) return session as DemoSession;
+
+  const { url, key } = supabaseConfig();
+  const response = await fetch(`${url}/auth/v1/token?grant_type=refresh_token`, {
+    method: 'POST', headers: restHeaders(key, key), body: JSON.stringify({ refresh_token: session.refreshToken }),
+  });
+  if (!response.ok) {
+    await SecureStore.deleteItemAsync(SUPABASE_SESSION_KEY, secureStoreOptions);
+    throw new Error('Session distante expirée. Reconnectez-vous une fois par SMS.');
+  }
+  const body = await response.json() as { access_token?: unknown; refresh_token?: unknown; user?: { id?: unknown }; expires_in?: unknown };
+  if (typeof body.access_token !== 'string' || typeof body.refresh_token !== 'string' || typeof body.user?.id !== 'string') {
+    await SecureStore.deleteItemAsync(SUPABASE_SESSION_KEY, secureStoreOptions);
+    throw new Error('Renouvellement de session invalide.');
+  }
+  const refreshed: DemoSession = {
+    accessToken: body.access_token, refreshToken: body.refresh_token, userId: body.user.id,
+    expiresAt: Date.now() + (typeof body.expires_in === 'number' ? body.expires_in * 1000 : 0),
+  };
+  await SecureStore.setItemAsync(SUPABASE_SESSION_KEY, JSON.stringify(refreshed), secureStoreOptions);
+  return refreshed;
 }
 
 export const hasRemoteSession = async () => (await SecureStore.getItemAsync(SUPABASE_SESSION_KEY, secureStoreOptions)) !== null;
 
-export async function requestPatientOtp(email: string): Promise<void> {
-  const normalized = email.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error('Adresse e-mail de démonstration invalide.');
+export async function requestPatientOtp(phone: string): Promise<void> {
+  const normalized = phone.replace(/[\s()-]/g, '');
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error('Utilisez un numéro international, par exemple +221771234567.');
   const { url, key } = supabaseConfig();
   const response = await fetch(`${url}/auth/v1/otp`, {
     method: 'POST', headers: restHeaders(key, key),
-    body: JSON.stringify({ email: normalized, create_user: true }),
+    body: JSON.stringify({ phone: normalized, create_user: true }),
   });
-  if (!response.ok) throw new Error('Envoi OTP indisponible.');
+  if (response.status === 422) {
+    let errorCode = '';
+    try {
+      const body = await response.json() as { code?: unknown };
+      if (typeof body.code === 'string' && /^[a-z0-9_-]{1,80}$/i.test(body.code)) errorCode = ` : ${body.code}`;
+    } catch {
+      // The server response is intentionally not logged or displayed.
+    }
+    throw new Error(`Demande SMS refusée par Supabase (422)${errorCode}. Vérifiez le numéro, les limites d’envoi et les restrictions du fournisseur.`);
+  }
+  if (!response.ok) throw new Error('Création du compte ou envoi du SMS indisponible.');
 }
 
-export async function verifyPatientOtp(email: string, token: string): Promise<void> {
-  const normalized = email.trim().toLowerCase();
+export async function signInWithRemotePin(phone: string, pin: string): Promise<void> {
+  const normalized = phone.replace(/[\s()-]/g, '');
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized) || !/^\d{6}$/.test(pin)) throw new Error('Numéro ou code secret invalide.');
+  const { url, key } = supabaseConfig();
+  const response = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+    method: 'POST', headers: restHeaders(key, key), body: JSON.stringify({ phone: normalized, password: pin }),
+  });
+  if (!response.ok) throw new Error('Numéro ou code secret incorrect.');
+  const body = await response.json() as { access_token?: unknown; refresh_token?: unknown; user?: { id?: unknown }; expires_in?: unknown };
+  if (typeof body.access_token !== 'string' || typeof body.refresh_token !== 'string' || typeof body.user?.id !== 'string') throw new Error('Session distante invalide.');
+  await SecureStore.setItemAsync(SUPABASE_SESSION_KEY, JSON.stringify({
+    accessToken: body.access_token, refreshToken: body.refresh_token, userId: body.user.id,
+    expiresAt: Date.now() + (typeof body.expires_in === 'number' ? body.expires_in * 1000 : 0),
+  } satisfies DemoSession), secureStoreOptions);
+}
+
+export async function verifyPatientOtp(phone: string, token: string): Promise<void> {
+  const normalized = phone.replace(/[\s()-]/g, '');
   if (!/^\d{6}$/.test(token)) throw new Error('L’OTP doit contenir 6 chiffres.');
   const { url, key } = supabaseConfig();
   const response = await fetch(`${url}/auth/v1/verify`, {
     method: 'POST', headers: restHeaders(key, key),
-    body: JSON.stringify({ email: normalized, token, type: 'email' }),
+    body: JSON.stringify({ phone: normalized, token, type: 'sms' }),
   });
   if (!response.ok) throw new Error('OTP expiré ou incorrect.');
-  const body = await response.json() as { access_token?: unknown; user?: { id?: unknown } };
-  if (typeof body.access_token !== 'string' || typeof body.user?.id !== 'string') throw new Error('Session OTP invalide.');
-  await SecureStore.setItemAsync(SUPABASE_SESSION_KEY, JSON.stringify({ accessToken: body.access_token, userId: body.user.id } satisfies DemoSession), secureStoreOptions);
+  const body = await response.json() as { access_token?: unknown; refresh_token?: unknown; user?: { id?: unknown }; expires_in?: unknown };
+  if (typeof body.access_token !== 'string' || typeof body.refresh_token !== 'string' || typeof body.user?.id !== 'string') throw new Error('Session OTP invalide.');
+  await SecureStore.setItemAsync(SUPABASE_SESSION_KEY, JSON.stringify({
+    accessToken: body.access_token, refreshToken: body.refresh_token, userId: body.user.id,
+    expiresAt: Date.now() + (typeof body.expires_in === 'number' ? body.expires_in * 1000 : 0),
+  } satisfies DemoSession), secureStoreOptions);
 }
 
 const restHeaders = (key: string, accessToken: string, prefer?: string) => ({
@@ -394,9 +495,9 @@ export async function processDocumentOutbox(): Promise<{ completed: number; pend
         body: JSON.stringify({ id: randomUUID(), patient_id: session.userId, document_id: row.id, version: row.version }),
       });
       if (!mutationResponse.ok) throw new Error('sync_mutation');
-      await localDb.withExclusiveTransactionAsync(async (transaction) => {
-        await transaction.runAsync('UPDATE documents SET sync_state=? WHERE id=?', 'synced', row.id);
-        await transaction.runAsync('DELETE FROM outbox WHERE id=?', row.outbox_id);
+      await localDb.transaction(async () => {
+        await localDb.runAsync('UPDATE documents SET sync_state=? WHERE id=?', 'synced', row.id);
+        await localDb.runAsync('DELETE FROM outbox WHERE id=?', row.outbox_id);
       });
       completed += 1;
     } catch {
@@ -408,19 +509,125 @@ export async function processDocumentOutbox(): Promise<{ completed: number; pend
   return { completed, pending: pending?.count ?? 0 };
 }
 
-export type DemoShareSession = { sessionId: string; opaqueToken: string; code: string; expiresAt: string; qrPayload: string };
+export async function loadPatientProfile(): Promise<PatientProfile> {
+  const row = await (await db()).getFirstAsync<{ value: string }>('SELECT value FROM config WHERE key = ?', ENCRYPTED_PROFILE_KEY);
+  if (!row) return { displayName: '', age: '', bloodType: '', conditions: '' };
+  const sealed = AESSealedData.fromCombined(decodeBase64(row.value), { ivLength: 12, tagLength: 16 });
+  const clear = await aesDecryptAsync(sealed, await patientKey(), { additionalData: profileAad() });
+  const stored = JSON.parse(new TextDecoder().decode(clear)) as Partial<PatientProfile> & { age?: string | number };
+  return {
+    displayName: typeof stored.displayName === 'string' ? stored.displayName : '',
+    age: typeof stored.age === 'number' ? String(stored.age) : typeof stored.age === 'string' ? stored.age : '',
+    bloodType: typeof stored.bloodType === 'string' ? stored.bloodType : '',
+    conditions: typeof stored.conditions === 'string' ? stored.conditions : '',
+  };
+}
 
-export async function createDemoShare(documentId: string): Promise<DemoShareSession> {
+export async function savePatientProfile(profile: PatientProfile): Promise<void> {
+  const age = profile.age.trim();
+  if (age && (!/^\d{1,3}$/.test(age) || Number(age) < 1 || Number(age) > 130)) throw new Error('Âge invalide.');
+  const normalized: PatientProfile = {
+    displayName: profile.displayName.trim().slice(0, 80),
+    age,
+    bloodType: profile.bloodType.trim().slice(0, 8),
+    conditions: profile.conditions.trim().slice(0, 500),
+  };
+  const encrypted = await aesEncryptAsync(utf8(JSON.stringify(normalized)), await patientKey(), {
+    nonce: { length: 12 }, tagLength: 16, additionalData: profileAad(),
+  });
+  await (await db()).runAsync(
+    `INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ENCRYPTED_PROFILE_KEY, await encrypted.combined('base64'),
+  );
+}
+
+export async function syncPatientProfile(): Promise<void> {
+  const session = await demoSession();
+  const { url, key } = supabaseConfig();
+  const row = await (await db()).getFirstAsync<{ value: string }>('SELECT value FROM config WHERE key = ?', ENCRYPTED_PROFILE_KEY);
+  if (!row) return;
+  const ciphertextHash = await digest(CryptoDigestAlgorithm.SHA256, utf8(row.value));
+  const response = await fetch(`${url}/rest/v1/patient_profiles?on_conflict=patient_id`, {
+    method: 'POST', headers: restHeaders(key, session.accessToken, 'resolution=merge-duplicates'),
+    body: JSON.stringify({ patient_id: session.userId, ciphertext: row.value, ciphertext_hash: arrayBufferToHex(ciphertextHash) }),
+  });
+  if (!response.ok) throw new Error('Synchronisation du profil impossible.');
+}
+
+export type DemoShareSession = { sessionId: string; opaqueToken: string; expiresAt: string; qrPayload: string };
+export type DemoShareStatus = {
+  state: 'pending' | 'requested' | 'approved' | 'accessed' | 'declined' | 'revoked' | 'expired';
+  requested: boolean;
+  requesterName?: string;
+  requesterFacility?: string;
+  portalPublicKey?: string;
+  expiresAt?: string;
+};
+
+export type PortalKeyEnvelope = {
+  algorithm: 'nacl-box-v1';
+  patientEphemeralPublicKey: string;
+  encryptedFileKey: string;
+  nonce: string;
+};
+
+export async function queueOfflineShareIntent(documentId: string): Promise<ShareIntent> {
+  const localDb = await db();
+  const document = await localDb.getFirstAsync<{ id: string }>('SELECT id FROM documents WHERE id = ? AND patient_id = ?', documentId, PATIENT_ID);
+  if (!document) throw new Error('Document inconnu.');
+  const intent = createPendingShareIntent(
+    randomUUID(),
+    documentId,
+    new Date().toISOString(),
+  );
+  await localDb.runAsync(
+    `INSERT INTO share_request_outbox(id, document_id, state, created_at)
+     VALUES(?,?,'pending_connection',?) ON CONFLICT(document_id) DO UPDATE SET
+     id=excluded.id, state='pending_connection', attempts=0, created_at=excluded.created_at`,
+    intent.id, intent.documentId, intent.createdAt,
+  );
+  return intent;
+}
+
+export async function listPendingShareIntents(): Promise<ShareIntent[]> {
+  const rows = await (await db()).getAllAsync<{ id: string; document_id: string; state: ShareIntent['state']; created_at: string }>(
+    'SELECT id, document_id, state, created_at FROM share_request_outbox ORDER BY created_at',
+  );
+  return rows.map((row) => ({ id: row.id, documentId: row.document_id, state: row.state, createdAt: row.created_at }));
+}
+
+export async function processShareIntentOutbox(): Promise<{ completed: DemoShareSession[]; pending: number }> {
+  const localDb = await db();
+  const intents = await listPendingShareIntents();
+  const completed: DemoShareSession[] = [];
+  for (const intent of intents) {
+    const document = await localDb.getFirstAsync<{ sync_state: SyncState }>('SELECT sync_state FROM documents WHERE id = ?', intent.documentId);
+    if (document?.sync_state !== 'synced') continue;
+    try {
+      await localDb.runAsync('UPDATE share_request_outbox SET state = ? WHERE id = ?', 'activating', intent.id);
+      const session = await createDemoShare(intent.documentId, { intentId: intent.id });
+      await localDb.runAsync('DELETE FROM share_request_outbox WHERE id = ?', intent.id);
+      completed.push(session);
+    } catch {
+      await localDb.runAsync('UPDATE share_request_outbox SET state = ?, attempts = attempts + 1 WHERE id = ?', 'failed', intent.id);
+    }
+  }
+  const pending = await localDb.getFirstAsync<{ count: number }>('SELECT COUNT(*) AS count FROM share_request_outbox');
+  return { completed, pending: pending?.count ?? 0 };
+}
+
+export async function createDemoShare(documentId: string, offlineIntent?: { intentId: string }): Promise<DemoShareSession> {
   if (!/^[0-9a-f-]{36}$/i.test(documentId)) throw new Error('Document invalide.');
+  if (offlineIntent && !/^[0-9a-f-]{36}$/i.test(offlineIntent.intentId)) throw new Error('Intention de partage invalide.');
   const { url, key } = supabaseConfig();
   const session = await demoSession();
   const response = await fetch(`${url}/functions/v1/share-demo`, {
     method: 'POST', headers: restHeaders(key, session.accessToken),
-    body: JSON.stringify({ action: 'create', documentId }),
+    body: JSON.stringify({ action: 'create', documentId, ...(offlineIntent ?? {}) }),
   });
   if (!response.ok) throw new Error('Création du partage impossible. Synchronisez d’abord le document.');
   const body = await response.json() as Partial<DemoShareSession>;
-  if (!body.sessionId || !body.opaqueToken || !body.code || !body.expiresAt || !body.qrPayload) throw new Error('Session de partage invalide.');
+  if (!body.sessionId || !body.opaqueToken || !body.expiresAt || !body.qrPayload) throw new Error('Session de partage invalide.');
   return body as DemoShareSession;
 }
 
@@ -433,6 +640,58 @@ export async function revokeDemoShare(sessionId: string): Promise<void> {
   });
   if (!response.ok) throw new Error('Révocation impossible.');
 }
+
+export async function checkDemoShareRequest(sessionId: string): Promise<DemoShareStatus> {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId)) throw new Error('Session de partage invalide.');
+  const { url, key } = supabaseConfig();
+  const session = await demoSession();
+  const response = await fetch(`${url}/functions/v1/share-demo`, {
+    method: 'POST', headers: restHeaders(key, session.accessToken),
+    body: JSON.stringify({ action: 'status', sessionId }),
+  });
+  if (!response.ok) throw new Error('Vérification de la demande impossible.');
+  const body = await response.json() as Partial<DemoShareStatus>;
+  return {
+    state: body.state ?? 'pending',
+    requested: body.requested === true,
+    requesterName: body.requesterName,
+    requesterFacility: body.requesterFacility,
+    portalPublicKey: body.portalPublicKey,
+    expiresAt: body.expiresAt,
+  };
+}
+
+export async function createPortalKeyEnvelope(documentId: string, portalPublicKey: string): Promise<PortalKeyEnvelope> {
+  const portalKey = decodeBase64(portalPublicKey);
+  if (portalKey.length !== nacl.box.publicKeyLength) throw new Error('Clé temporaire du portail invalide.');
+  const row = await (await db()).getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', documentId, PATIENT_ID);
+  if (!row) throw new Error('Document inconnu.');
+  const fileKey = await unwrapFileKey(row);
+  const patientSecret = getRandomBytes(nacl.box.secretKeyLength);
+  const patientKeys = nacl.box.keyPair.fromSecretKey(patientSecret);
+  const nonce = getRandomBytes(nacl.box.nonceLength);
+  const encryptedFileKey = nacl.box(new Uint8Array(await fileKey.bytes()), nonce, portalKey, patientKeys.secretKey);
+  return {
+    algorithm: 'nacl-box-v1',
+    patientEphemeralPublicKey: toBase64(patientKeys.publicKey),
+    encryptedFileKey: toBase64(encryptedFileKey),
+    nonce: toBase64(nonce),
+  };
+}
+
+async function decideDemoShare(sessionId: string, action: 'approve' | 'decline', keyEnvelope?: PortalKeyEnvelope): Promise<void> {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId)) throw new Error('Session de partage invalide.');
+  const { url, key } = supabaseConfig();
+  const session = await demoSession();
+  const response = await fetch(`${url}/functions/v1/share-demo`, {
+    method: 'POST', headers: restHeaders(key, session.accessToken), body: JSON.stringify({ action, sessionId, ...(keyEnvelope ?? {}) }),
+  });
+  if (!response.ok) throw new Error(action === 'approve' ? 'Accord impossible.' : 'Refus impossible.');
+  await response.json();
+}
+
+export const approveDemoShare = (sessionId: string, keyEnvelope: PortalKeyEnvelope) => decideDemoShare(sessionId, 'approve', keyEnvelope);
+export const declineDemoShare = (sessionId: string) => decideDemoShare(sessionId, 'decline');
 
 export async function openLocalDocument(id: string): Promise<{ title: string; mimeType: string; sizeBytes: number; imageDataUri?: string }> {
   const row = await (await db()).getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', id, PATIENT_ID);
@@ -450,7 +709,7 @@ export async function openLocalDocument(id: string): Promise<{ title: string; mi
     title: metadata.title,
     mimeType: row.mime_type,
     sizeBytes: plaintext.length,
-    imageDataUri: row.mime_type === 'image/jpeg' ? `data:image/jpeg;base64,${toBase64(plaintext)}` : undefined,
+    imageDataUri: row.mime_type === 'image/jpeg' || row.mime_type === 'image/png' ? `data:${row.mime_type};base64,${toBase64(plaintext)}` : undefined,
   };
 }
 
@@ -459,13 +718,27 @@ export async function prepareSmartImport(id: string): Promise<SmartImportRequest
   if (!row) throw new Error('Document inconnu.');
   const key = await unwrapFileKey(row);
   const metadata = await decryptMetadata(row, key);
+  if (!metadata.smartImportEligible || metadata.kind === 'document') throw new Error('Analyse intelligente indisponible pour ce fichier.');
   return parseSmartImportRequest({
     requestId: randomUUID(),
-    schemaVersion: 1,
+    schemaVersion: 2,
     pseudonymizedText: extractAndPseudonymizeFixture(metadata.kind),
     locale: 'fr',
-    allowedDocumentTypes: ['prescription', 'lab_result'],
   });
+}
+
+export async function updateDocumentType(id: string, value: string): Promise<string> {
+  const documentType = normalizeDocumentType(value);
+  const localDb = await db();
+  const row = await localDb.getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', id, PATIENT_ID);
+  if (!row) throw new Error('Document inconnu.');
+  const key = await unwrapFileKey(row);
+  const current = await decryptMetadata(row, key);
+  const encrypted = await aesEncryptAsync(utf8(JSON.stringify({ ...current, documentType } satisfies Metadata)), key, {
+    nonce: { length: 12 }, tagLength: 16, additionalData: metadataAad(row.id, row.version),
+  });
+  await localDb.runAsync('UPDATE documents SET encrypted_metadata = ? WHERE id = ? AND patient_id = ?', await encrypted.combined('base64'), row.id, PATIENT_ID);
+  return documentType;
 }
 
 export async function queueApprovedSmartImport(documentId: string, request: SmartImportRequest): Promise<void> {
@@ -478,7 +751,40 @@ export async function queueApprovedSmartImport(documentId: string, request: Smar
   );
 }
 
-export type PendingSmartImportResult = { requestId: string; documentId: string; result: SmartImportResponse; source: 'gpt-5.6' | 'local_demo_simulation' };
+export type PendingSmartImportResult = {
+  requestId: string;
+  documentId: string;
+  result: SmartImportResponse;
+  source: 'groq' | 'openai_legacy' | 'local_demo_simulation';
+  model?: string;
+};
+
+type StoredSmartImportResult = {
+  source?: unknown;
+  model?: unknown;
+  result?: unknown;
+};
+
+async function sealPendingSmartImportResult(documentId: string, requestId: string, value: StoredSmartImportResult): Promise<string> {
+  const localDb = await db();
+  const document = await localDb.getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', documentId, PATIENT_ID);
+  if (!document) throw new Error('Document inconnu.');
+  const sealed = await aesEncryptAsync(utf8(JSON.stringify(value)), await unwrapFileKey(document), {
+    nonce: { length: 12 }, tagLength: 16, additionalData: smartImportResultAad(documentId, requestId),
+  });
+  return sealed.combined('base64');
+}
+
+async function openPendingSmartImportResult(row: { request_id: string; document_id: string; response_payload: string }): Promise<StoredSmartImportResult> {
+  // Compatibilité : les résultats créés avant le chiffrement local restent lisibles puis sont supprimés après décision.
+  if (row.response_payload.trimStart().startsWith('{')) return JSON.parse(row.response_payload) as StoredSmartImportResult;
+  const localDb = await db();
+  const document = await localDb.getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', row.document_id, PATIENT_ID);
+  if (!document) throw new Error('Document inconnu.');
+  const sealed = AESSealedData.fromCombined(decodeBase64(row.response_payload), { ivLength: 12, tagLength: 16 });
+  const clear = await aesDecryptAsync(sealed, await unwrapFileKey(document), { additionalData: smartImportResultAad(row.document_id, row.request_id) });
+  return JSON.parse(new TextDecoder().decode(clear)) as StoredSmartImportResult;
+}
 
 let processingSmartImports = false;
 
@@ -503,15 +809,18 @@ export async function processSmartImportOutbox(): Promise<{ completed: number; p
           body: JSON.stringify(approved),
         });
         if (!response.ok) throw new Error(`smart_import_http_${response.status}`);
-        const body = await response.json() as { result?: unknown };
+        const body = await response.json() as { result?: unknown; provider?: unknown; model?: unknown };
         const result = parseSmartImportResponse(body.result);
-        await localDb.withExclusiveTransactionAsync(async (transaction) => {
-          await transaction.runAsync(
+        const source = body.provider === 'groq' ? 'groq' : 'openai_legacy';
+        const model = typeof body.model === 'string' && body.model.length <= 100 ? body.model : undefined;
+        const encryptedResult = await sealPendingSmartImportResult(row.document_id, row.request_id, { source, model, result });
+        await localDb.transaction(async () => {
+          await localDb.runAsync(
             `INSERT INTO smart_import_results(request_id, document_id, response_payload, created_at) VALUES(?,?,?,?)
              ON CONFLICT(document_id) DO UPDATE SET request_id=excluded.request_id, response_payload=excluded.response_payload, created_at=excluded.created_at`,
-            row.request_id, row.document_id, JSON.stringify({ source: 'gpt-5.6', result }), new Date().toISOString(),
+            row.request_id, row.document_id, encryptedResult, new Date().toISOString(),
           );
-          await transaction.runAsync('DELETE FROM smart_import_outbox WHERE request_id = ?', row.request_id);
+          await localDb.runAsync('DELETE FROM smart_import_outbox WHERE request_id = ?', row.request_id);
         });
         completed += 1;
       } catch {
@@ -529,13 +838,22 @@ export async function listPendingSmartImportResults(): Promise<PendingSmartImpor
   const rows = await (await db()).getAllAsync<{ request_id: string; document_id: string; response_payload: string }>(
     'SELECT request_id, document_id, response_payload FROM smart_import_results ORDER BY created_at',
   );
-  return rows.map((row) => {
-    const stored = JSON.parse(row.response_payload) as { source?: unknown; result?: unknown };
-    if (stored.source === 'gpt-5.6' || stored.source === 'local_demo_simulation') {
-      return { requestId: row.request_id, documentId: row.document_id, source: stored.source, result: parseSmartImportResponse(stored.result) };
+  return Promise.all(rows.map(async (row) => {
+    const stored = await openPendingSmartImportResult(row);
+    if (stored.source === 'groq' || stored.source === 'openai_legacy' || stored.source === 'local_demo_simulation') {
+      return {
+        requestId: row.request_id,
+        documentId: row.document_id,
+        source: stored.source,
+        model: typeof stored.model === 'string' && stored.model.length <= 100 ? stored.model : undefined,
+        result: parseSmartImportResponse(stored.result),
+      };
     }
-    return { requestId: row.request_id, documentId: row.document_id, source: 'gpt-5.6' as const, result: parseSmartImportResponse(stored) };
-  });
+    if (stored.source === 'gpt-5.6') {
+      return { requestId: row.request_id, documentId: row.document_id, source: 'openai_legacy' as const, model: 'gpt-5.6', result: parseSmartImportResponse(stored.result) };
+    }
+    return { requestId: row.request_id, documentId: row.document_id, source: 'openai_legacy' as const, model: 'gpt-5.6', result: parseSmartImportResponse(stored) };
+  }));
 }
 
 export async function simulatePendingSmartImports(): Promise<number> {
@@ -546,40 +864,53 @@ export async function simulatePendingSmartImports(): Promise<number> {
   for (const row of rows) {
     const request = parseSmartImportRequest(JSON.parse(row.approved_payload));
     const result = simulateSmartImportLocally(request);
-    await localDb.withExclusiveTransactionAsync(async (transaction) => {
-      await transaction.runAsync(
+    const encryptedResult = await sealPendingSmartImportResult(row.document_id, row.request_id, { source: 'local_demo_simulation', result });
+    await localDb.transaction(async () => {
+      await localDb.runAsync(
         `INSERT INTO smart_import_results(request_id, document_id, response_payload, created_at) VALUES(?,?,?,?)
          ON CONFLICT(document_id) DO UPDATE SET request_id=excluded.request_id, response_payload=excluded.response_payload, created_at=excluded.created_at`,
-        row.request_id, row.document_id, JSON.stringify({ source: 'local_demo_simulation', result }), new Date().toISOString(),
+        row.request_id, row.document_id, encryptedResult, new Date().toISOString(),
       );
-      await transaction.runAsync('DELETE FROM smart_import_outbox WHERE request_id = ?', row.request_id);
+      await localDb.runAsync('DELETE FROM smart_import_outbox WHERE request_id = ?', row.request_id);
     });
   }
   return rows.length;
 }
 
-export async function confirmSmartImportResult(item: PendingSmartImportResult): Promise<void> {
+async function reviewSmartImportResult(item: PendingSmartImportResult, status: StoredAiAnalysis['status']): Promise<void> {
   const localDb = await db();
   const row = await localDb.getFirstAsync<DocumentRow>('SELECT * FROM documents WHERE id = ? AND patient_id = ?', item.documentId, PATIENT_ID);
   if (!row) throw new Error('Document inconnu.');
   const result = parseSmartImportResponse(item.result);
   const key = await unwrapFileKey(row);
   const current = await decryptMetadata(row, key);
-  const encrypted = await aesEncryptAsync(utf8(JSON.stringify({ ...current, title: result.suggestedTitle } satisfies Metadata)), key, {
+  const aiAnalysis: StoredAiAnalysis = {
+    status,
+    reviewedAt: new Date().toISOString(),
+    source: item.source,
+    ...(item.model ? { model: item.model } : {}),
+    result,
+  };
+  const next: Metadata = status === 'confirmed'
+    ? { ...current, title: result.suggestedTitle, documentType: result.documentType, aiAnalysis }
+    : { ...current, aiAnalysis };
+  const encrypted = await aesEncryptAsync(utf8(JSON.stringify(next)), key, {
     nonce: { length: 12 }, tagLength: 16, additionalData: metadataAad(row.id, row.version),
   });
-  await localDb.withExclusiveTransactionAsync(async (transaction) => {
-    await transaction.runAsync('UPDATE documents SET encrypted_metadata = ? WHERE id = ? AND patient_id = ?', await encrypted.combined('base64'), row.id, PATIENT_ID);
-    await transaction.runAsync('DELETE FROM smart_import_results WHERE request_id = ?', item.requestId);
+  await localDb.transaction(async () => {
+    await localDb.runAsync('UPDATE documents SET encrypted_metadata = ? WHERE id = ? AND patient_id = ?', await encrypted.combined('base64'), row.id, PATIENT_ID);
+    await localDb.runAsync('DELETE FROM smart_import_results WHERE request_id = ?', item.requestId);
   });
 }
 
+export const confirmSmartImportResult = (item: PendingSmartImportResult) => reviewSmartImportResult(item, 'confirmed');
+export const rejectSmartImportResult = (item: PendingSmartImportResult) => reviewSmartImportResult(item, 'rejected');
+
 export async function resetLocalDemo(): Promise<void> {
-  if (database) {
-    await database.closeAsync();
-    database = null;
-  }
+  const opened = database;
+  database = null;
+  if (opened) await opened.close().catch(() => undefined);
   await deleteDatabaseAsync(DB_NAME);
   if (vaultDirectory.exists) vaultDirectory.delete();
-  await Promise.all([DB_KEY, DEVICE_KEY, PIN_KEY, PIN_STATE_KEY, SUPABASE_SESSION_KEY].map((key) => SecureStore.deleteItemAsync(key, secureStoreOptions)));
+  await Promise.all([DEVICE_KEY, PIN_KEY, PIN_STATE_KEY, SUPABASE_SESSION_KEY].map((key) => SecureStore.deleteItemAsync(key, secureStoreOptions)));
 }

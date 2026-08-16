@@ -6,13 +6,13 @@
   "scripts": {
     "start": "corepack pnpm --dir apps/mobile start",
     "android": "corepack pnpm --dir apps/mobile android",
-    "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test && node --experimental-strip-types supabase/functions/smart-import/core.test.mjs && node --experimental-strip-types supabase/functions/share-demo/core.test.mjs && node scripts/verify-fixtures.mjs",
-    "build": "pnpm --filter @werpass/clinician-web build",
+    "lint": "corepack pnpm -r lint",
+    "typecheck": "corepack pnpm -r typecheck",
+    "test": "corepack pnpm -r test && node --experimental-strip-types supabase/functions/smart-import/core.test.mjs && node --experimental-strip-types supabase/functions/share-demo/core.test.mjs && node scripts/verify-fixtures.mjs",
+    "build": "corepack pnpm --filter @werpass/clinician-web build",
     "security:scan": "node scripts/security-scan.mjs",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm security:scan && pnpm build",
-    "demo:reset": "pnpm --filter @werpass/mobile demo:reset"
+    "verify": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm security:scan && corepack pnpm build",
+    "demo:reset": "corepack pnpm --filter @werpass/mobile demo:reset"
   },
   "devDependencies": { "typescript": "^5.6.3" }
 }

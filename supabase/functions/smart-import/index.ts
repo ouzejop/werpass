@@ -8,16 +8,17 @@ Deno.serve(async (request) => {
   const requestId = crypto.randomUUID();
   const startedAt = Date.now();
   if (request.method !== 'POST') return json({ error: 'method_not_allowed', requestId }, 405);
-  const apiKey = Deno.env.get('OPENAI_API_KEY') ?? Deno.env.get('OPEN_AI_SECRET');
-  const model = Deno.env.get('OPENAI_MODEL') ?? 'gpt-5.6';
+  const apiKey = Deno.env.get('GROQ_API_KEY');
+  const baseUrl = Deno.env.get('GROQ_BASE_URL') ?? 'https://api.groq.com/openai/v1';
+  const model = Deno.env.get('GROQ_MODEL') ?? Deno.env.get('GROQ_MODEL_EVALUATION') ?? 'openai/gpt-oss-120b';
   if (!apiKey) return json({ error: 'server_not_configured', requestId }, 503);
   try {
-    const result = await runSmartImport(await request.json(), { apiKey, model, fetch });
-    console.info(JSON.stringify({ event: 'smart_import_completed', requestId, model, durationMs: Date.now() - startedAt }));
-    return json({ result, requestId });
+    const result = await runSmartImport(await request.json(), { apiKey, baseUrl, model, fetch });
+    console.info(JSON.stringify({ event: 'smart_import_completed', requestId, provider: 'groq', model, durationMs: Date.now() - startedAt }));
+    return json({ result, requestId, provider: 'groq', model });
   } catch (error) {
-    const providerStatus = error instanceof Error && error.message.startsWith('openai_http_')
-      ? Number(error.message.slice('openai_http_'.length)) : null;
+    const providerStatus = error instanceof Error && error.message.startsWith('groq_http_')
+      ? Number(error.message.slice('groq_http_'.length)) : null;
     const code = error instanceof SyntaxError ? 'invalid_json'
       : providerStatus === 401 || providerStatus === 403 ? 'provider_auth'
       : providerStatus === 404 ? 'provider_model_unavailable'
@@ -25,7 +26,7 @@ Deno.serve(async (request) => {
       : providerStatus ? 'provider_error'
       : error instanceof Error && error.message.includes('request') ? 'invalid_request'
       : 'invalid_response';
-    console.info(JSON.stringify({ event: 'smart_import_failed', requestId, model, code, durationMs: Date.now() - startedAt }));
+    console.info(JSON.stringify({ event: 'smart_import_failed', requestId, provider: 'groq', model, code, durationMs: Date.now() - startedAt }));
     return json({ error: code, requestId }, code === 'invalid_request' || code === 'invalid_json' ? 400 : 502);
   }
 });

@@ -4,6 +4,8 @@ Avant de modifier du code, lis entièrement ce contexte, inspecte le projet exis
 
 # 1. Présentation du projet
 
+> **Périmètre recentré — 31 juillet 2026** : pour débloquer la démonstration, la priorité active est le parcours coffre local → demande professionnelle identifiée → confirmation/refus explicite du patient → code à usage unique. Le partage hors ligne reste une intention en attente. La récupération multi-appareil, le transfert appareil-à-appareil et les clés éphémères du navigateur sont reportés ; voir [docs/SCOPE.md](docs/SCOPE.md).
+
 WérPass est une application mobile permettant aux patients de conserver, organiser, consulter hors connexion et partager temporairement leurs documents médicaux.
 
 Le projet répond à un problème fréquent en Afrique : les dossiers médicaux sont fragmentés entre plusieurs établissements et différents supports physiques :
@@ -29,8 +31,8 @@ Le patient peut :
 - importer ou photographier un document médical ;
 - consulter ses documents hors connexion ;
 - visualiser son historique sous forme de chronologie ;
-- choisir d’utiliser ou non l’import intelligent avec GPT-5.6 ;
-- vérifier les données avant leur envoi à OpenAI ;
+- choisir d’utiliser ou non l’analyse intelligente avec GPT‑OSS sur Groq ;
+- vérifier les données avant leur envoi à Groq ;
 - sélectionner les documents à partager ;
 - générer un QR temporaire et un code d’accès médical ;
 - définir la durée d’un partage ;
@@ -54,9 +56,9 @@ Le professionnel peut :
 
 L’espace professionnel peut être une application web responsive afin que le médecin n’ait pas besoin d’installer l’application mobile.
 
-# 3. Utilisation de GPT-5.6
+# 3. Utilisation de GPT‑OSS sur Groq
 
-GPT-5.6 intervient uniquement pendant l’import d’un document, lorsque le patient active l’option « Import intelligent ».
+GPT‑OSS intervient uniquement après l’import d’un document, lorsque le patient ouvre ce document et active l’option « Analyser avec l’IA ».
 
 Le flux doit être le suivant :
 
@@ -74,8 +76,8 @@ Le flux doit être le suivant :
    - les métadonnées sensibles.
 4. Le patient visualise les informations pseudonymisées.
 5. Il approuve ou annule l’envoi.
-6. Seul le texte minimal pseudonymisé est envoyé à GPT-5.6.
-7. Le document original n’est jamais envoyé à OpenAI.
+6. Seul le texte minimal pseudonymisé est envoyé à GPT‑OSS via Groq.
+7. Le document original n’est jamais envoyé à Groq ni à un autre fournisseur IA.
 8. GPT retourne une réponse JSON structurée.
 9. Le patient vérifie et confirme le résultat avant son enregistrement.
 
@@ -208,7 +210,7 @@ L’application du patient doit fonctionner hors connexion pour :
 Les opérations nécessitant internet sont placées dans une file d’attente :
 
 - synchronisation avec Supabase ;
-- utilisation de GPT-5.6 ;
+- utilisation de GPT‑OSS sur Groq ;
 - récupération de compte ;
 - partage distant avec un professionnel.
 
@@ -268,8 +270,8 @@ Ne mélange jamais ces trois mécanismes dans le code ou dans l’interface.
 
 ## Intelligence artificielle
 
-- OpenAI Responses API ;
-- GPT-5.6 ;
+- Groq Chat Completions API ;
+- `openai/gpt-oss-120b` ;
 - Structured Outputs avec schéma JSON strict.
 
 ## Portail professionnel
@@ -285,7 +287,7 @@ Ne mélange jamais ces trois mécanismes dans le code ou dans l’interface.
 - tests du mode hors connexion ;
 - tests du chiffrement ;
 - tests des expirations et révocations ;
-- tests empêchant l’envoi de données non approuvées à OpenAI.
+- tests empêchant l’envoi de données non approuvées à Groq.
 
 # 11. MVP du hackathon
 
@@ -298,7 +300,7 @@ Le MVP doit démontrer :
 5. Consultation hors connexion.
 6. Option d’import intelligent.
 7. Pseudonymisation et aperçu avant envoi.
-8. Appel à GPT-5.6 après consentement.
+8. Appel à GPT‑OSS sur Groq après consentement.
 9. Réponse JSON structurée et confirmation du patient.
 10. Synchronisation chiffrée avec Supabase.
 11. Chronologie médicale.
@@ -345,7 +347,7 @@ Priorités absolues :
 2. Contrôle et consentement du patient.
 3. Fonctionnement hors connexion.
 4. Simplicité de la démonstration.
-5. Utilisation pertinente et limitée de GPT-5.6.
+5. Utilisation pertinente et limitée de GPT‑OSS sur Groq.
 6. Aucun faux diagnostic ni conseil médical.
 7. Aucun secret exposé dans le code, les logs ou les QR.
 

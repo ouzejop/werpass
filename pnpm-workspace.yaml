@@ -1,6 +1,8 @@
 packages:
   - apps/*
   - packages/*
+allowBuilds:
+  esbuild: set this to true or false
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.9'
   - '@expo/metro-config@57.0.6'

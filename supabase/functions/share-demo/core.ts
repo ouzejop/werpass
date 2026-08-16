@@ -1,25 +1,48 @@
-const encoder = new TextEncoder();
-
-export const validCode = (value: unknown): value is string => typeof value === 'string' && /^\d{6}$/.test(value);
-export const validOpaqueToken = (value: unknown): value is string => typeof value === 'string'
+export const validUuid = (value: unknown): value is string => typeof value === 'string'
   && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+export const validOpaqueToken = (value: unknown): value is string =>
+  validUuid(value) || (typeof value === 'string' && /^[A-Za-z0-9_-]{8}$/.test(value));
 
-export function generateMedicalCode(random: Uint8Array): string {
-  if (random.length < 4) throw new Error('insufficient_randomness');
-  const value = ((random[0] << 24) | (random[1] << 16) | (random[2] << 8) | random[3]) >>> 0;
-  return String(value % 1_000_000).padStart(6, '0');
+export const normalizeOpaqueToken = (value: unknown): string | null => {
+  if (!validOpaqueToken(value)) return null;
+  // Legacy UUID tokens are case-insensitive. New compact Base64 URL tokens
+  // preserve their case to retain 48 bits of entropy.
+  return validUuid(value) ? value.toLowerCase() : value;
+};
+
+export const compactOpaqueToken = (uuid: string): string => {
+  if (!validUuid(uuid)) throw new Error('invalid_uuid');
+  const firstSixBytes = uuid.replaceAll('-', '').slice(0, 12).match(/.{2}/g)!;
+  return btoa(String.fromCharCode(...firstSixBytes.map((byte) => Number.parseInt(byte, 16))))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
+};
+
+export const SHARE_CODE_LENGTH = 8;
+const SHARE_CODE_SPACE = 10 ** SHARE_CODE_LENGTH;
+const UINT32_SPACE = 2 ** 32;
+const SHARE_CODE_LIMIT = Math.floor(UINT32_SPACE / SHARE_CODE_SPACE) * SHARE_CODE_SPACE;
+
+export function numericShareCodeFromUint32(value: number): string | null {
+  if (!Number.isInteger(value) || value < 0 || value >= SHARE_CODE_LIMIT) return null;
+  return String(value % SHARE_CODE_SPACE).padStart(SHARE_CODE_LENGTH, '0');
 }
 
-export async function digestMedicalCode(pepper: string, sessionId: string, code: string): Promise<string> {
-  if (!pepper || !validOpaqueToken(sessionId) || !validCode(code)) throw new Error('invalid_code_material');
-  const key = await crypto.subtle.importKey('raw', encoder.encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(`${sessionId}:${code}`));
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
+export function generateNumericShareCode(): string {
+  const random = new Uint32Array(1);
+  do crypto.getRandomValues(random); while (random[0] >= SHARE_CODE_LIMIT);
+  return numericShareCodeFromUint32(random[0])!;
 }
 
-export function constantTimeEqual(left: string, right: string): boolean {
-  let difference = left.length ^ right.length;
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  return difference === 0;
+export function canRequestSession(state: unknown, expiresAt: unknown, now = Date.now()): boolean {
+  return state === 'pending'
+    && typeof expiresAt === 'string'
+    && new Date(expiresAt).getTime() > now;
+}
+
+export function canPatientDecide(state: unknown, expiresAt: unknown, now = Date.now()): boolean {
+  return state === 'requested'
+    && typeof expiresAt === 'string'
+    && new Date(expiresAt).getTime() > now;
 }
